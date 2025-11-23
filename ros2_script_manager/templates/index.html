@@ -20,6 +20,14 @@
         <div id="toast-container"></div>
         
         <div id="scripts-container"></div>
+
+        <!-- Sync Time -->
+        <div class="sync-time">
+            <form action="/sync_time" method="post" id="syncTimeForm">
+                <input type="hidden" name="client_time" id="client_time">
+                <button type="submit" class="btn-sync">Sync Time from Client to Jetson</button>
+            </form>
+        </div>
         
         <footer class="footer">
             <p>Contact us at <a href="https://robotixx.cs.gmu.edu/index.html" target="_blank" rel="noopener noreferrer">RobotiXX Lab</a></p>
@@ -56,6 +64,31 @@
                 setTimeout(() => toast.remove(), 300);
             }, 4000);
         }
+
+        // Add client time to sync form before submit
+        document.getElementById('syncTimeForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const now = new Date();
+            const utcString = now.toISOString();
+            document.getElementById('client_time').value = utcString;
+            const formData = new FormData(this);
+            // Conlog logging
+            console.log(`Sync Time Requested: ${utcString}`);
+            try {
+                const response = await fetch('/sync_time', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showToast(result.message, 'success');
+                } else {
+                    showToast(result.message, 'error');
+                }
+            } catch (err) {
+                showToast('Failed to sync time: ' + err, 'error');
+            }
+        });
 
         async function loadScripts() {
             const response = await fetch('/api/scripts');
