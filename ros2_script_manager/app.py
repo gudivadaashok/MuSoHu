@@ -1,15 +1,24 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, redirect, url_for, flash
 from flask_cors import CORS
 import subprocess
 import os
 import signal
 from logging_config import setup_logging
+import datetime
+import logging
 
 app = Flask(__name__)
 CORS(app)
 
 # Setup logging
 logger = setup_logging(app)
+
+# Sync time logger
+sync_logger = logging.getLogger("sync_time")
+sync_handler = logging.FileHandler("conlog.log")
+sync_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+sync_logger.addHandler(sync_handler)
+sync_logger.setLevel(logging.INFO)
 
 # Store running processes
 running_processes = {}
@@ -135,6 +144,28 @@ def stop_script(script_id):
             del running_processes[script_id]
         return jsonify({'message': f'✓ Stopped {script_name}'})
 
+@app.route('/sync_time', methods=['POST'])
+def sync_time():
+    try:
+        client_time = request.form.get('client_time')
+        if not client_time:
+            client_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        try:
+            dt = datetime.datetime.fromisoformat(client_time.replace('Z', '+00:00'))
+        except Exception:
+            dt = datetime.datetime.now(datetime.timezone.utc)
+        formatted = dt.strftime('%Y-%m-%d %H:%M:%S')
+        subprocess.run(['sudo', 'date', '-u', '-s', formatted], check=True)
+        sync_logger.info(f"Time sync requested: {client_time} (UTC parsed: {formatted})")
+        # Also log to conlog.html
+        with open("conlog.html", "a") as html_log:
+            html_log.write(f"<div>Time sync: <b>{client_time}</b> (UTC: {formatted}) at {datetime.datetime.now().isoformat()}</div>\n")
+        return jsonify({'success': True, 'message': 'Time synced successfully!'})
+    except Exception as e:
+        sync_logger.error(f"Failed to sync time: {e}")
+        with open("conlog.html", "a") as html_log:
+            html_log.write(f"<div style='color:red'>Sync error: {e} at {datetime.datetime.now().isoformat()}</div>\n")
+        return jsonify({'success': False, 'message': f'Failed to sync time: {e}'})
 
 if __name__ == '__main__':
     logger.info('Starting MuSoHu ROS2 Script Manager')
