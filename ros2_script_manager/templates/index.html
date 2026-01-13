@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ROS2 Script Manager</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
 </head>
 <body>
     <div class="container">
@@ -14,12 +15,22 @@
         <div class="title-section">
             <h1>MuSoHu</h1>
             <p class="subtitle">Multi-Modal Social Human Navigation Dataset</p>
+            <p class="server-status">Server Time: <span id="server-time">Connecting...</span></p>
         </div>
         
         <!-- Toast Container -->
         <div id="toast-container"></div>
         
         <div id="scripts-container"></div>
+
+        <!-- Sync Time -->
+        <div class="sync-time">
+            <form action="/sync_time" method="post" id="syncTimeForm">
+                <input type="hidden" name="client_time" id="client_time">
+                <input type="hidden" name="client_timezone" id="client_timezone">
+                <button type="submit" class="btn-sync">Sync Time from Client to Jetson</button>
+            </form>
+        </div>
         
         <footer class="footer">
             <p>Contact us at <a href="https://robotixx.cs.gmu.edu/index.html" target="_blank" rel="noopener noreferrer">RobotiXX Lab</a></p>
@@ -27,6 +38,17 @@
     </div>
 
     <script>
+        // Confirm connection
+        var socket = io();
+        socket.on('connect', function() {
+            console.log('Websocket connected!');
+        });
+        
+        // Listen for server time updates
+        socket.on('server_time', function(msg) {
+            document.getElementById('server-time').textContent = msg.time;
+        });
+
         // Toast Notification System
         function showToast(message, type = 'info') {
             const toastContainer = document.getElementById('toast-container');
@@ -57,9 +79,44 @@
             }, 4000);
         }
 
+        // Add client time to sync form before submit
+        document.getElementById('syncTimeForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const now = new Date();
+            const utcString = now.toISOString();
+            document.getElementById('client_time').value = utcString;
+            
+            // Get client timezone
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            document.getElementById('client_timezone').value = timezone;
+
+            const formData = new FormData(this);
+            // Conlog logging
+            console.log(`Sync Time Requested: ${utcString}, Timezone: ${timezone}`);
+            try {
+                const response = await fetch('/sync_time', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showToast(result.message, 'success');
+                } else {
+                    showToast(result.message, 'error');
+                }
+            } catch (err) {
+                showToast('Failed to sync time: ' + err, 'error');
+            }
+        });
+
         async function loadScripts() {
             const response = await fetch('/api/scripts');
-            const scripts = await response.json();
+            const data = await response.json();
+            
+            const scripts = data.scripts;
+            const serverTime = data.server_time;
+
+            document.getElementById('server-time').textContent = serverTime;
             
             const container = document.getElementById('scripts-container');
             container.innerHTML = '';
