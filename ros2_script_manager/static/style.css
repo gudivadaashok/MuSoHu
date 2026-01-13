@@ -86,6 +86,39 @@ h1 {
     }
 }
 
+/* On small/mobile screens keep the title and subtitle on a single line to save vertical space */
+@media (max-width: 768px) {
+    .title-section {
+        flex-direction: row;
+        gap: 0.5rem;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 2vh;
+    }
+
+    .title-section h1,
+    .title-section .subtitle {
+        display: inline-block;
+        margin: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+    }
+
+    .title-section h1 {
+        font-size: clamp(1.25rem, 6vw, 1.5rem);
+        font-weight: 700;
+    }
+
+    .title-section .subtitle {
+        font-size: clamp(0.8rem, 3.5vw, 1rem);
+        color: #666;
+        margin-left: 0.5rem;
+        opacity: 0.95;
+    }
+}
+
 #scripts-container {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
@@ -241,6 +274,27 @@ button {
     border-color: #dc2626;
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.sync-time {
+    margin-top: 4vh;
+    display: flex;
+    justify-content: center;
+    padding: 0 2vh;
+}
+
+.btn-sync {
+    background: #3b82f6;
+    color: white;
+    border-color: #3b82f6;
+    max-width: 400px;
+}
+
+.btn-sync:hover {
+    background: #2563eb;
+    border-color: #2563eb;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
 }
 
 .footer {
