@@ -1172,6 +1172,11 @@ async def sync_time(
                 # Give system a moment to apply timezone change
                 import time
                 time.sleep(0.5)
+            except subprocess.CalledProcessError as e:
+                if "no new privileges" in e.stderr:
+                    sync_logger.warning(f"Container 'no_new_privileges' flag prevents timezone change. Continuing without timezone change.")
+                else:
+                    sync_logger.warning(f"Could not set timezone to {client_timezone}: {e}")
             except Exception as e:
                 sync_logger.warning(f"Could not set timezone to {client_timezone}: {e}")
         
@@ -1185,6 +1190,11 @@ async def sync_time(
                 timeout=5
             )
             sync_logger.info("NTP disabled successfully")
+        except subprocess.CalledProcessError as e:
+            if "no new privileges" in e.stderr:
+                sync_logger.warning(f"Container 'no_new_privileges' flag prevents NTP control. Continuing without disabling NTP.")
+            else:
+                sync_logger.warning(f"Could not disable NTP: {e}")
         except Exception as e:
             sync_logger.warning(f"Could not disable NTP: {e}")
         
@@ -1210,13 +1220,32 @@ async def sync_time(
         sync_logger.info(f"Setting system time to: {formatted_local} (will be interpreted as local time)")
         
         # Set system time using timedatectl (interprets as LOCAL time)
-        result = subprocess.run(
-            ['sudo', 'timedatectl', 'set-time', formatted_local],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        try:
+            result = subprocess.run(
+                ['sudo', 'timedatectl', 'set-time', formatted_local],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+        except subprocess.CalledProcessError as e:
+            # Check if this is a container privilege issue
+            if "no new privileges" in e.stderr:
+                # In containers with no_new_privileges, try to set time directly if running as root
+                try:
+                    import time
+                    result = subprocess.run(
+                        ['timedatectl', 'set-time', formatted_local],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                except Exception as direct_e:
+                    sync_logger.warning(f"Container 'no_new_privileges' flag prevents time sync via timedatectl. This is expected in Docker containers without proper capability flags.")
+                    raise subprocess.CalledProcessError(1, 'timedatectl', output="", stderr="Container 'no_new_privileges' flag set. Time sync requires: docker run --cap-add=SYS_TIME or proper CAP_SYS_TIME capabilities")
+            else:
+                raise
         
         # Verify the time was set
         verify_result = subprocess.run(
@@ -1244,7 +1273,13 @@ async def sync_time(
             'message': f'✓ Server synced! Local time: {new_time}'
         })
     except subprocess.CalledProcessError as e:
-        error_msg = f"Failed to sync time: {e.stderr}. Note: This requires sudo permissions."
+        error_msg = f"Failed to sync time: {e.stderr if e.stderr else str(e)}"
+        if "no_new_privileges" in str(e.stderr):
+            error_msg = (
+                "⚠️ Time sync unavailable in this environment. "
+                "If running in Docker, add --cap-add=SYS_TIME flag or disable the 'no_new_privileges' security option. "
+                "See documentation for details."
+            )
         sync_logger.error(error_msg)
         html_log_path = os.path.join(BASE_DIR, "conlog.html")
         with open(html_log_path, "a") as html_log:
