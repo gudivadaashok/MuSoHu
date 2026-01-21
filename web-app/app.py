@@ -1401,12 +1401,165 @@ async def sync_time(
 async def connect(sid, environ):
     """Handle WebSocket connection"""
     logger.info(f"WebSocket client connected: {sid}")
+    # Send current script status on connection
+    await sio.emit('scripts_status', ROS2_SCRIPTS, room=sid)
 
 
 @sio.event
 async def disconnect(sid):
     """Handle WebSocket disconnection"""
     logger.info(f"WebSocket client disconnected: {sid}")
+
+
+@sio.event
+async def start_script(sid, data):
+    """Handle start script request via WebSocket"""
+    try:
+        script_id = data.get('script_id')
+        logger.info(f'WebSocket request to start script: {script_id} from {sid}')
+        
+        # Backward compatibility
+        if script_id == 'rviz2':
+            script_id = 'record_bag'
+        
+        if script_id not in ROS2_SCRIPTS:
+            await sio.emit('script_error', {
+                'script_id': script_id,
+                'error': 'Script not found'
+            }, room=sid)
+            return
+
+        if script_id in running_processes:
+            await sio.emit('script_error', {
+                'script_id': script_id,
+                'error': 'Script already running'
+            }, room=sid)
+            return
+
+        command = ROS2_SCRIPTS[script_id]['command']
+        script_name = ROS2_SCRIPTS[script_id]['description']
+
+        # Start the process
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid  # Create new process group
+        )
+
+        # Update tracking
+        running_processes[script_id] = process
+        ROS2_SCRIPTS[script_id]['status'] = 'running'
+        ROS2_SCRIPTS[script_id]['pid'] = str(process.pid)
+
+        logger.info(f'Successfully started {script_id} with PID: {process.pid}')
+        
+        # Broadcast status update to all connected clients
+        await sio.emit('script_started', {
+            'script_id': script_id,
+            'message': f'Started {script_name}',
+            'pid': process.pid,
+            'status': 'running'
+        })
+        
+        # Send full status update
+        await sio.emit('scripts_status', ROS2_SCRIPTS)
+        
+    except Exception as e:
+        logger.error(f'Failed to start script via WebSocket: {str(e)}')
+        await sio.emit('script_error', {
+            'script_id': data.get('script_id'),
+            'error': str(e)
+        }, room=sid)
+
+
+@sio.event
+async def stop_script(sid, data):
+    """Handle stop script request via WebSocket"""
+    try:
+        script_id = data.get('script_id')
+        logger.info(f'WebSocket request to stop script: {script_id} from {sid}')
+        
+        # Backward compatibility
+        if script_id == 'rviz2':
+            script_id = 'record_bag'
+            
+        if script_id not in ROS2_SCRIPTS:
+            await sio.emit('script_error', {
+                'script_id': script_id,
+                'error': 'Invalid script ID'
+            }, room=sid)
+            return
+
+        script_name = ROS2_SCRIPTS[script_id]['description']
+        
+        # Always ensure status is set to stopped
+        ROS2_SCRIPTS[script_id]['status'] = 'stopped'
+        ROS2_SCRIPTS[script_id]['pid'] = None
+        
+        if script_id not in running_processes:
+            await sio.emit('script_stopped', {
+                'script_id': script_id,
+                'message': f'{script_name} is already stopped',
+                'status': 'stopped'
+            }, room=sid)
+            await sio.emit('scripts_status', ROS2_SCRIPTS)
+            return
+
+        process = running_processes[script_id]
+        pid = process.pid
+        
+        # Check if process is still alive
+        if process.poll() is not None:
+            # Process already terminated
+            del running_processes[script_id]
+            await sio.emit('script_stopped', {
+                'script_id': script_id,
+                'message': f'Stopped {script_name} (PID: {pid})',
+                'status': 'stopped'
+            })
+            await sio.emit('scripts_status', ROS2_SCRIPTS)
+            return
+
+        # Terminate the process gracefully
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # Force kill if termination times out
+            process.kill()
+            process.wait()
+        except ProcessLookupError:
+            # Process doesn't exist anymore
+            pass
+
+        del running_processes[script_id]
+        
+        logger.info(f"Successfully stopped {script_id} (PID: {pid})")
+        
+        # Broadcast status update to all connected clients
+        await sio.emit('script_stopped', {
+            'script_id': script_id,
+            'message': f'Stopped {script_name}',
+            'pid': pid,
+            'status': 'stopped'
+        })
+        
+        # Send full status update
+        await sio.emit('scripts_status', ROS2_SCRIPTS)
+        
+    except Exception as e:
+        logger.error(f'Error stopping script via WebSocket: {str(e)}')
+        # Clean up even on error
+        if script_id in running_processes:
+            del running_processes[script_id]
+        await sio.emit('script_stopped', {
+            'script_id': data.get('script_id'),
+            'message': f'Stopped {ROS2_SCRIPTS[script_id]["description"]}',
+            'status': 'stopped'
+        })
+        await sio.emit('scripts_status', ROS2_SCRIPTS)
 
 
 async def background_time_sender():
@@ -1432,11 +1585,45 @@ async def background_time_sender():
             pass
 
 
+async def background_script_monitor():
+    """Background task to monitor script status and send updates"""
+    while True:
+        await asyncio.sleep(2)  # Check every 2 seconds
+        try:
+            status_changed = False
+            # Check if any running processes have terminated
+            for script_id in list(running_processes.keys()):
+                process = running_processes[script_id]
+                if process.poll() is not None:
+                    # Process has terminated
+                    logger.info(f"Detected {script_id} has stopped (exit code: {process.returncode})")
+                    ROS2_SCRIPTS[script_id]['status'] = 'stopped'
+                    ROS2_SCRIPTS[script_id]['pid'] = None
+                    del running_processes[script_id]
+                    status_changed = True
+                    
+                    # Notify clients
+                    await sio.emit('script_stopped', {
+                        'script_id': script_id,
+                        'message': f'{ROS2_SCRIPTS[script_id]["description"]} stopped',
+                        'status': 'stopped',
+                        'exit_code': process.returncode
+                    })
+            
+            # Send periodic status update if anything changed
+            if status_changed:
+                await sio.emit('scripts_status', ROS2_SCRIPTS)
+                
+        except Exception as e:
+            logger.error(f"Error in script monitor: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks on app startup"""
     asyncio.create_task(background_time_sender())
-    logger.info("Background time sender started")
+    asyncio.create_task(background_script_monitor())
+    logger.info("Background tasks started: time sender and script monitor")
 
 
 if __name__ == "__main__":
