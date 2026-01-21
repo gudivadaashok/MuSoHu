@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MuSoHu WebSocket Test</title>
+    <script src="/static/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button.stop {
+            background: #dc3545;
+        }
+        button.stop:hover {
+            background: #a02d3a;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .log {
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #007bff;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            padding: 5px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .timestamp {
+            color: #6c757d;
+            margin-right: 10px;
+        }
+        .script-status {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .script-status.running {
+            background: #28a745;
+            color: white;
+        }
+        .script-status.stopped {
+            background: #6c757d;
+            color: white;
+        }
+        .script-card {
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background: #fafafa;
+        }
+        .script-info {
+            margin: 10px 0;
+            font-size: 14px;
+        }
+        .script-info strong {
+            color: #495057;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔌 MuSoHu WebSocket Test</h1>
+    
+    <div class="section">
+        <h2>Connection Status</h2>
+        <div id="connection-status" class="status disconnected">Disconnected</div>
+    </div>
+
+    <div class="section">
+        <h2>ROS2 Scripts Control</h2>
+        
+        <div class="script-card">
+            <h3>🎯 Launch Helmet Sensors</h3>
+            <div class="script-info">
+                <strong>ID:</strong> helmet_nodes<br>
+                <strong>Status:</strong> <span class="script-status" id="status-helmet_nodes">stopped</span><br>
+                <strong>PID:</strong> <span id="pid-helmet_nodes">-</span>
+            </div>
+            <button onclick="startScript('helmet_nodes')">▶️ Start Sensors</button>
+            <button class="stop" onclick="stopScript('helmet_nodes')">⏹️ Stop Sensors</button>
+        </div>
+
+        <div class="script-card">
+            <h3>📹 Record ROS2 Bags</h3>
+            <div class="script-info">
+                <strong>ID:</strong> record_bag<br>
+                <strong>Status:</strong> <span class="script-status" id="status-record_bag">stopped</span><br>
+                <strong>PID:</strong> <span id="pid-record_bag">-</span>
+            </div>
+            <button onclick="startScript('record_bag')">▶️ Start Recording</button>
+            <button class="stop" onclick="stopScript('record_bag')">⏹️ Stop Recording</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Event Log</h2>
+        <button onclick="clearLog()">Clear Log</button>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io();
+        const logDiv = document.getElementById('log');
+        const statusDiv = document.getElementById('connection-status');
+
+        function addLog(message, data = null) {
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            let logText = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+            if (data) {
+                logText += `<br><pre style="margin: 5px 0; padding: 5px; background: #e9ecef;">${JSON.stringify(data, null, 2)}</pre>`;
+            }
+            
+            entry.innerHTML = logText;
+            logDiv.insertBefore(entry, logDiv.firstChild);
+        }
+
+        function clearLog() {
+            logDiv.innerHTML = '';
+        }
+
+        function updateScriptStatus(scriptId, status, pid = null) {
+            const statusSpan = document.getElementById(`status-${scriptId}`);
+            const pidSpan = document.getElementById(`pid-${scriptId}`);
+            
+            if (statusSpan) {
+                statusSpan.textContent = status;
+                statusSpan.className = `script-status ${status}`;
+            }
+            
+            if (pidSpan) {
+                pidSpan.textContent = pid || '-';
+            }
+        }
+
+        function startScript(scriptId) {
+            addLog(`🚀 Requesting to start: ${scriptId}`);
+            socket.emit('start_script', { script_id: scriptId });
+        }
+
+        function stopScript(scriptId) {
+            addLog(`⏹️ Requesting to stop: ${scriptId}`);
+            socket.emit('stop_script', { script_id: scriptId });
+        }
+
+        // Connection events
+        socket.on('connect', () => {
+            statusDiv.textContent = 'Connected ✓';
+            statusDiv.className = 'status connected';
+            addLog('✅ Connected to server');
+        });
+
+        socket.on('disconnect', () => {
+            statusDiv.textContent = 'Disconnected ✗';
+            statusDiv.className = 'status disconnected';
+            addLog('❌ Disconnected from server');
+        });
+
+        // Script status events
+        socket.on('scripts_status', (data) => {
+            addLog('📊 Received full script status', data);
+            
+            // Update UI for each script
+            for (const [scriptId, scriptData] of Object.entries(data)) {
+                updateScriptStatus(scriptId, scriptData.status, scriptData.pid);
+            }
+        });
+
+        socket.on('script_started', (data) => {
+            addLog(`✅ Script started: ${data.script_id}`, data);
+            updateScriptStatus(data.script_id, data.status, data.pid);
+        });
+
+        socket.on('script_stopped', (data) => {
+            addLog(`⏹️ Script stopped: ${data.script_id}`, data);
+            updateScriptStatus(data.script_id, data.status);
+        });
+
+        socket.on('script_error', (data) => {
+            addLog(`❌ Script error: ${data.script_id}`, data);
+            alert(`Error: ${data.error}`);
+        });
+
+        // Server time (optional)
+        socket.on('server_time', (data) => {
+            // Uncomment to see time updates
+            // console.log('Server time:', data.time);
+        });
+
+        // Initial log
+        addLog('🔌 WebSocket test page loaded');
+    </script>
+</body>
+</html>
