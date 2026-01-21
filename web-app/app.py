@@ -162,6 +162,14 @@ async def logs(request: Request):
     })
 
 
+@app.get("/sensor-check", response_class=HTMLResponse)
+async def sensor_check(request: Request):
+    """Sensor check guide page"""
+    return templates.TemplateResponse("sensor_check.html", {
+        "request": request
+    })
+
+
 # ============================================================================
 # API Routes - Health Check
 # ----------------------- API Routes - Health Check --------------------------
@@ -173,6 +181,118 @@ async def health_check():
         'running_scripts': len(running_processes),
         'timestamp': datetime.now().isoformat()
     })
+
+
+@app.get("/api/sensors")
+async def get_sensor_status():
+    """Get status of all helmet sensors"""
+    try:
+        # Source ROS2 and get node list
+        ros_env = os.environ.copy()
+        ros_env['ROS_DOMAIN_ID'] = '0'
+        
+        result = subprocess.run(
+            ['bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 node list 2>/dev/null'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=ros_env
+        )
+        
+        nodes = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        
+        # Get topics
+        result_topics = subprocess.run(
+            ['bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 topic list 2>/dev/null'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=ros_env
+        )
+        
+        topics = result_topics.stdout.strip().split('\n') if result_topics.stdout.strip() else []
+        
+        # Check each sensor
+        sensors = {
+            'imu': {
+                'name': 'IMU',
+                'icon': '📍',
+                'node': '/imu_node',
+                'topics': ['/imu_node/cali'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            },
+            'lidar': {
+                'name': 'LiDAR',
+                'icon': '🔦',
+                'node': '/lidar_node',
+                'topics': ['/rslidar_points'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            },
+            'audio': {
+                'name': 'Audio (ReSpeaker)',
+                'icon': '🎤',
+                'node': '/respeaker_node',
+                'topics': ['/audio', '/doa', '/speech_audio'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            },
+            'zed': {
+                'name': 'ZED Camera',
+                'icon': '📷',
+                'node': '/zed2i/zed_node',
+                'topics': ['/zed2i/zed_node/rgb/image_rect_color', '/zed2i/zed_node/depth/depth_registered'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            }
+        }
+        
+        # Check which sensors are active
+        for sensor_id, sensor in sensors.items():
+            # Check if node exists
+            if sensor['node'] in nodes:
+                sensor['node_found'] = True
+            
+            # Check which topics exist
+            for topic in sensor['topics']:
+                if topic in topics:
+                    sensor['topics_found'].append(topic)
+            
+            # Determine status
+            if sensor['node_found'] and len(sensor['topics_found']) > 0:
+                sensor['status'] = 'running'
+            elif sensor['node_found']:
+                sensor['status'] = 'partial'
+            else:
+                sensor['status'] = 'stopped'
+        
+        return JSONResponse(content={
+            'sensors': sensors,
+            'total_nodes': len(nodes),
+            'total_topics': len(topics),
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except subprocess.TimeoutExpired:
+        return JSONResponse(content={
+            'error': 'ROS2 command timeout',
+            'sensors': {},
+            'total_nodes': 0,
+            'total_topics': 0
+        }, status_code=500)
+    except Exception as e:
+        logger.error(f"Error getting sensor status: {e}")
+        return JSONResponse(content={
+            'error': str(e),
+            'sensors': {},
+            'total_nodes': 0,
+            'total_topics': 0
+        }, status_code=500)
 
 
 # ============================================================================
