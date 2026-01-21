@@ -110,6 +110,14 @@ def generate_launch_description():
             )
         ]
     )
+
+    # Action Generator
+    action_generator = Node(
+        package='helmet_bringup',
+        executable='action_generator.py',
+        name='action_generator',
+        output='screen'
+    )
     
     return LaunchDescription([
         launch_imu_arg,
@@ -120,4 +128,5 @@ def generate_launch_description():
         lidar_launch,
         zed_launch,
         audio_launch,
+        action_generator,
     ])

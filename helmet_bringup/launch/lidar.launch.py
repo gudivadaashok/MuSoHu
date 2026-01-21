@@ -21,7 +21,7 @@ def generate_launch_description():
     # Get launch configurations
     frame_id = LaunchConfiguration('frame_id')
     
-    # Get package directories
+    # Get package directoriesccd
     helmet_bringup_dir = FindPackageShare('helmet_bringup')
     
     # LiDAR node
@@ -40,6 +40,14 @@ def generate_launch_description():
             }
         ],
         output='screen'
+    )
+
+    # transform from zed to lidar
+    tf_cam2lidar_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        output='screen',
+        arguments=['-0.530000', '0.000000', '0.400000', '0.000000', '0.000000', '0.000000', 'zed2i_camera_link', 'rslidar'],
     )
     
     return LaunchDescription([
