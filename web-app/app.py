@@ -14,6 +14,7 @@ import shutil
 import logging
 from datetime import datetime, timezone
 import yaml
+import pytz
 from file_discovery import FileDiscoveryService
 import asyncio
 
@@ -836,42 +837,120 @@ async def sync_time(
         if not client_time:
             client_time = datetime.now(timezone.utc).isoformat()
         
+        # Parse the client time (which is in ISO format, UTC)
         try:
-            dt = datetime.fromisoformat(client_time.replace('Z', '+00:00'))
+            dt_utc = datetime.fromisoformat(client_time.replace('Z', '+00:00'))
         except Exception:
-            dt = datetime.now(timezone.utc)
+            dt_utc = datetime.now(timezone.utc)
         
-        formatted = dt.strftime('%Y-%m-%d %H:%M:%S')
+        sync_logger.info(f"Time sync requested - Client UTC time: {client_time}, Parsed: {dt_utc}, Target timezone: {client_timezone}")
         
-        # Set system time (requires sudo permissions)
+        # First, set timezone if provided and valid (must be done before setting time)
+        timezone_set = False
+        if client_timezone and client_timezone != "UTC":
+            try:
+                tz_result = subprocess.run(
+                    ['sudo', 'timedatectl', 'set-timezone', client_timezone],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                sync_logger.info(f"Timezone set to: {client_timezone}")
+                timezone_set = True
+                # Give system a moment to apply timezone change
+                import time
+                time.sleep(0.5)
+            except Exception as e:
+                sync_logger.warning(f"Could not set timezone to {client_timezone}: {e}")
+        
+        # Disable NTP to allow manual time setting
+        try:
+            subprocess.run(
+                ['sudo', 'timedatectl', 'set-ntp', 'false'],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            sync_logger.info("NTP disabled successfully")
+        except Exception as e:
+            sync_logger.warning(f"Could not disable NTP: {e}")
+        
+        # IMPORTANT: timedatectl set-time interprets time in LOCAL timezone
+        # Client sends UTC time, but we need to convert it to local time for timedatectl
+        # Example: Client at 04:47 EST sends 09:47 UTC
+        # We need to set local time to 04:47, not 09:47
+        
+        # Convert UTC to local time for the target timezone
+        import pytz
+        if timezone_set and client_timezone:
+            try:
+                target_tz = pytz.timezone(client_timezone)
+                dt_local = dt_utc.astimezone(target_tz)
+                formatted_local = dt_local.strftime('%Y-%m-%d %H:%M:%S')
+                sync_logger.info(f"Converted UTC {dt_utc} to local {formatted_local} ({client_timezone})")
+            except Exception as e:
+                sync_logger.error(f"Failed to convert timezone: {e}. Using UTC.")
+                formatted_local = dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            formatted_local = dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+        
+        sync_logger.info(f"Setting system time to: {formatted_local} (will be interpreted as local time)")
+        
+        # Set system time using timedatectl (interprets as LOCAL time)
         result = subprocess.run(
-            ['sudo', 'date', '-u', '-s', formatted],
+            ['sudo', 'timedatectl', 'set-time', formatted_local],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         
-        sync_logger.info(f"Time sync requested: {client_time} (UTC parsed: {formatted}) Timezone: {client_timezone}")
+        # Verify the time was set
+        verify_result = subprocess.run(
+            ['timedatectl', 'status'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        sync_logger.info(f"Time sync completed. Verification:\n{verify_result.stdout}")
+        
+        # Get the new system time in local timezone
+        new_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')
         
         # Log to HTML file
         html_log_path = os.path.join(BASE_DIR, "conlog.html")
         with open(html_log_path, "a") as html_log:
             html_log.write(
-                f"<div>Time sync: <b>{client_time}</b> (UTC: {formatted}) "
-                f"Timezone: <b>{client_timezone}</b> at {datetime.now().isoformat()}</div>\n"
+                f"<div style='color:green;font-weight:bold'>✓ Time sync SUCCESS: Client UTC <b>{client_time}</b> "
+                f"→ Server local time now: <b>{new_time}</b> (Timezone: {client_timezone if timezone_set else 'unchanged'})</div>\n"
             )
         
         return JSONResponse(content={
             'success': True,
-            'message': 'Time synced successfully!'
+            'message': f'✓ Server synced! Local time: {new_time}'
         })
     except subprocess.CalledProcessError as e:
-        error_msg = f"Failed to sync time: {e.stderr}"
+        error_msg = f"Failed to sync time: {e.stderr}. Note: This requires sudo permissions."
         sync_logger.error(error_msg)
         html_log_path = os.path.join(BASE_DIR, "conlog.html")
         with open(html_log_path, "a") as html_log:
             html_log.write(
                 f"<div style='color:red'>Sync error: {error_msg} at {datetime.now().isoformat()}</div>\n"
+            )
+        return JSONResponse(content={
+            'success': False,
+            'message': error_msg
+        }, status_code=500)
+    except subprocess.TimeoutExpired:
+        error_msg = "Time sync command timed out"
+        sync_logger.error(error_msg)
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:red'>Sync timeout: {error_msg} at {datetime.now().isoformat()}</div>\n"
             )
         return JSONResponse(content={
             'success': False,
