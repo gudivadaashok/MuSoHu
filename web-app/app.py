@@ -209,7 +209,8 @@ async def get_sensor_status():
         ros_env['ROS_DOMAIN_ID'] = '0'
         
         # Get nodes asynchronously with shorter timeout
-        proc_nodes = await asyncio.create_subprocess_shell(
+        proc_nodes = await asyncio.create_subprocess_exec(
+            'bash', '-c',
             'source /home/jetson/ros2_musohu_ws/install/setup.bash && timeout 2 ros2 node list 2>/dev/null || echo ""',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -228,7 +229,8 @@ async def get_sensor_status():
                 pass
         
         # Get topics asynchronously
-        proc_topics = await asyncio.create_subprocess_shell(
+        proc_topics = await asyncio.create_subprocess_exec(
+            'bash', '-c',
             'source /home/jetson/ros2_musohu_ws/install/setup.bash && timeout 2 ros2 topic list 2>/dev/null || echo ""',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
