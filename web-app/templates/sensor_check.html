@@ -194,7 +194,7 @@
 
     <div class="container">
         <div class="page-header">
-            <h2>🔍 Helmet Sensor Status</h2>
+            <h2>Helmet Sensor Status</h2>
             <p class="page-description">Real-time monitoring of all sensors</p>
         </div>
 
@@ -269,7 +269,7 @@
                 
             } catch (error) {
                 console.error('Error loading sensor status:', error);
-                const errorMsg = error.name === 'AbortError' ? 'Request timeout - ROS2 may not be running' : 'Failed to load sensor status';
+                const errorMsg = error.name === 'AbortError' ? 'Request timeout - check server logs for details' : 'Failed to load sensor status';
                 document.getElementById('sensor-container').innerHTML = 
                     `<div class="loading" style="color: #f44336;">${errorMsg}</div>`;
             }

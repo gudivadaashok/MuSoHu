@@ -188,40 +188,69 @@ async def get_sensor_status():
     """Get status of all helmet sensors"""
     try:
         # Kill any stuck ros2 processes first (they pile up and cause hangs)
-        subprocess.run(['pkill', '-9', '-f', 'ros2 node list'], capture_output=True, timeout=1)
-        subprocess.run(['pkill', '-9', '-f', 'ros2 topic list'], capture_output=True, timeout=1)
+        try:
+            await asyncio.wait_for(
+                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 node list'),
+                timeout=0.5
+            )
+        except:
+            pass
         
-        # Source ROS2 and get node list
+        try:
+            await asyncio.wait_for(
+                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 topic list'),
+                timeout=0.5
+            )
+        except:
+            pass
+        
+        # Source ROS2 and get node list using async subprocess
         ros_env = os.environ.copy()
         ros_env['ROS_DOMAIN_ID'] = '0'
         
-        # Use timeout command as additional safety net
-        result = subprocess.run(
-            ['timeout', '3', 'bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 node list 2>/dev/null || echo ""'],
-            capture_output=True,
-            text=True,
-            timeout=4,  # Python timeout slightly longer than bash timeout
+        # Get nodes asynchronously with shorter timeout
+        proc_nodes = await asyncio.create_subprocess_shell(
+            'source /home/jetson/ros2_musohu_ws/install/setup.bash && timeout 2 ros2 node list 2>/dev/null || echo ""',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=ros_env
         )
         
-        nodes = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        try:
+            stdout, _ = await asyncio.wait_for(proc_nodes.communicate(), timeout=2.5)
+            nodes = stdout.decode().strip().split('\n') if stdout.decode().strip() else []
+        except asyncio.TimeoutError:
+            logger.warning("ros2 node list timed out")
+            nodes = []
+            try:
+                proc_nodes.kill()
+            except:
+                pass
         
-        # Get topics
-        result_topics = subprocess.run(
-            ['timeout', '3', 'bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 topic list 2>/dev/null || echo ""'],
-            capture_output=True,
-            text=True,
-            timeout=4,
+        # Get topics asynchronously
+        proc_topics = await asyncio.create_subprocess_shell(
+            'source /home/jetson/ros2_musohu_ws/install/setup.bash && timeout 2 ros2 topic list 2>/dev/null || echo ""',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=ros_env
         )
         
-        topics = result_topics.stdout.strip().split('\n') if result_topics.stdout.strip() else []
+        try:
+            stdout, _ = await asyncio.wait_for(proc_topics.communicate(), timeout=2.5)
+            topics = stdout.decode().strip().split('\n') if stdout.decode().strip() else []
+        except asyncio.TimeoutError:
+            logger.warning("ros2 topic list timed out")
+            topics = []
+            try:
+                proc_topics.kill()
+            except:
+                pass
         
         # Check each sensor
         sensors = {
             'imu': {
                 'name': 'IMU',
-                'icon': '📍',
+                'icon': '',
                 'node': '/imu_node',
                 'topics': ['/imu_node/cali'],
                 'status': 'stopped',
@@ -230,7 +259,7 @@ async def get_sensor_status():
             },
             'lidar': {
                 'name': 'LiDAR',
-                'icon': '🔦',
+                'icon': '',
                 'node': '/lidar_node',
                 'topics': ['/rslidar_points'],
                 'status': 'stopped',
@@ -239,7 +268,7 @@ async def get_sensor_status():
             },
             'audio': {
                 'name': 'Audio (ReSpeaker)',
-                'icon': '🎤',
+                'icon': '',
                 'node': '/respeaker_node',
                 'topics': ['/audio', '/doa', '/speech_audio'],
                 'status': 'stopped',
@@ -248,7 +277,7 @@ async def get_sensor_status():
             },
             'zed': {
                 'name': 'ZED Camera',
-                'icon': '📷',
+                'icon': '',
                 'node': '/zed2i/zed_node',
                 'topics': ['/zed2i/zed_node/rgb/image_rect_color', '/zed2i/zed_node/depth/depth_registered'],
                 'status': 'stopped',
@@ -283,11 +312,23 @@ async def get_sensor_status():
             'timestamp': datetime.now().isoformat()
         })
         
-    except subprocess.TimeoutExpired as e:
+    except asyncio.TimeoutError as e:
         logger.error(f"ROS2 command timeout: {e}")
         # Kill any remaining stuck processes
-        subprocess.run(['pkill', '-9', '-f', 'ros2 node list'], capture_output=True, timeout=1)
-        subprocess.run(['pkill', '-9', '-f', 'ros2 topic list'], capture_output=True, timeout=1)
+        try:
+            await asyncio.wait_for(
+                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 node list'),
+                timeout=0.5
+            )
+        except:
+            pass
+        try:
+            await asyncio.wait_for(
+                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 topic list'),
+                timeout=0.5
+            )
+        except:
+            pass
         return JSONResponse(content={
             'error': 'ROS2 command timeout - daemon may be unresponsive. Try restarting ROS2 nodes.',
             'sensors': {},
