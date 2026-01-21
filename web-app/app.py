@@ -1181,22 +1181,43 @@ async def sync_time(
                 sync_logger.warning(f"Could not set timezone to {client_timezone}: {e}")
         
         # Disable NTP to allow manual time setting
+        ntp_disabled = False
         try:
-            subprocess.run(
-                ['sudo', 'timedatectl', 'set-ntp', 'false'],
+            sync_logger.info("Attempting to disable NTP with sudo...")
+            result = subprocess.run(
+                ['sudo', '-n', 'timedatectl', 'set-ntp', 'false'],
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=5
             )
             sync_logger.info("NTP disabled successfully")
+            ntp_disabled = True
+            # Give system a moment to fully disable NTP
+            import time
+            time.sleep(0.5)
         except subprocess.CalledProcessError as e:
-            if "no new privileges" in e.stderr:
+            sync_logger.error(f"NTP disable failed - returncode: {e.returncode}, stderr: '{e.stderr}', stdout: '{e.stdout}'")
+            error_text = (str(e.stderr) + str(e.stdout)).lower()
+            if "no new privileges" in error_text:
                 sync_logger.warning(f"Container 'no_new_privileges' flag prevents NTP control. Continuing without disabling NTP.")
+            elif "password" in error_text or "sudo" in error_text:
+                sync_logger.error(f"Sudo requires password - check /etc/sudoers.d/musohu-time-sync permissions")
+                raise subprocess.CalledProcessError(
+                    e.returncode, e.cmd, 
+                    output=e.stdout,
+                    stderr=f"SUDO_PASSWORD_REQUIRED: Sudo requires password. Check permissions setup."
+                )
             else:
-                sync_logger.warning(f"Could not disable NTP: {e}")
+                sync_logger.error(f"Failed to disable NTP: {e.stderr}")
+                raise subprocess.CalledProcessError(
+                    e.returncode, e.cmd, 
+                    output=e.stdout,
+                    stderr=f"Cannot disable NTP. Error: {e.stderr}"
+                )
         except Exception as e:
-            sync_logger.warning(f"Could not disable NTP: {e}")
+            sync_logger.error(f"Could not disable NTP (unexpected error): {e}")
+            raise
         
         # IMPORTANT: timedatectl set-time interprets time in LOCAL timezone
         # Client sends UTC time, but we need to convert it to local time for timedatectl
@@ -1221,16 +1242,35 @@ async def sync_time(
         
         # Set system time using timedatectl (interprets as LOCAL time)
         try:
+            sync_logger.info(f"Running: sudo -n timedatectl set-time {formatted_local}")
             result = subprocess.run(
-                ['sudo', 'timedatectl', 'set-time', formatted_local],
+                ['sudo', '-n', 'timedatectl', 'set-time', formatted_local],
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=10
             )
+            sync_logger.info(f"Time set successfully - stdout: '{result.stdout}', stderr: '{result.stderr}'")
         except subprocess.CalledProcessError as e:
-            # Check if this is a container privilege issue
-            if "no new privileges" in e.stderr:
+            sync_logger.error(f"Time set failed - returncode: {e.returncode}, stderr: '{e.stderr}', stdout: '{e.stdout}'")
+            error_text = (str(e.stderr) + str(e.stdout)).lower()
+            
+            # Check for specific error conditions
+            if "password" in error_text or ("sudo" in error_text and "try again" in error_text):
+                sync_logger.error("Sudo requires password - permissions not configured correctly")
+                raise subprocess.CalledProcessError(
+                    1, 'timedatectl',
+                    output="",
+                    stderr="SUDO_PASSWORD_REQUIRED: Sudo requires password for time setting. Run: sudo bash scripts/setup/setup_time_sync_permissions.sh"
+                )
+            elif "automatic time synchronization is enabled" in error_text:
+                sync_logger.error("NTP is still enabled - cannot set time manually")
+                raise subprocess.CalledProcessError(
+                    1, 'timedatectl',
+                    output="",
+                    stderr="NTP_ENABLED: Automatic time synchronization is still enabled. Cannot set time manually."
+                )
+            elif "no new privileges" in error_text:
                 # In containers with no_new_privileges, try to set time directly if running as root
                 try:
                     import time
@@ -1242,9 +1282,21 @@ async def sync_time(
                         timeout=10
                     )
                 except Exception as direct_e:
-                    sync_logger.warning(f"Container 'no_new_privileges' flag prevents time sync via timedatectl. This is expected in Docker containers without proper capability flags.")
-                    raise subprocess.CalledProcessError(1, 'timedatectl', output="", stderr="Container 'no_new_privileges' flag set. Time sync requires: docker run --cap-add=SYS_TIME or proper CAP_SYS_TIME capabilities")
+                    sync_logger.warning(f"Container 'no_new_privileges' flag prevents time sync via timedatectl.")
+                    raise subprocess.CalledProcessError(
+                        1, 'timedatectl',
+                        output="",
+                        stderr="DOCKER_NO_PRIVILEGES: Container 'no_new_privileges' flag set. Time sync requires: docker run --cap-add=SYS_TIME or proper CAP_SYS_TIME capabilities"
+                    )
+            elif "permission denied" in error_text:
+                sync_logger.error("Permission denied when trying to set time")
+                raise subprocess.CalledProcessError(
+                    1, 'timedatectl',
+                    output="",
+                    stderr="PERMISSION_DENIED: The user needs CAP_SYS_TIME capability or must be in the 'systemd-timesync' group."
+                )
             else:
+                # Re-raise with original error
                 raise
         
         # Verify the time was set
@@ -1273,13 +1325,40 @@ async def sync_time(
             'message': f'✓ Server synced! Local time: {new_time}'
         })
     except subprocess.CalledProcessError as e:
-        error_msg = f"Failed to sync time: {e.stderr if e.stderr else str(e)}"
-        if "no_new_privileges" in str(e.stderr):
+        # Provide appropriate error message based on the actual error
+        stderr_str = str(e.stderr).lower() if e.stderr else ""
+        
+        if "sudo_password_required" in stderr_str:
             error_msg = (
-                "⚠️ Time sync unavailable in this environment. "
-                "If running in Docker, add --cap-add=SYS_TIME flag or disable the 'no_new_privileges' security option. "
-                "See documentation for details."
+                "⚠️ Sudo permissions not configured. "
+                "Run: sudo bash scripts/setup/setup_time_sync_permissions.sh"
             )
+        elif "ntp_enabled" in stderr_str:
+            error_msg = (
+                "⚠️ Cannot set time: NTP (Network Time Protocol) is still enabled. "
+                "The system must disable NTP before manual time setting. "
+                "Check if timesyncd service is running or if NTP cannot be disabled."
+            )
+        elif "docker_no_privileges" in stderr_str or "no_new_privileges" in stderr_str:
+            error_msg = (
+                "⚠️ Time sync unavailable in Docker container. "
+                "Add --cap-add=SYS_TIME flag when running docker, or disable the 'no_new_privileges' security option. "
+                "Example: docker run --cap-add=SYS_TIME ..."
+            )
+        elif "permission_denied" in stderr_str or "permission denied" in stderr_str:
+            error_msg = (
+                "⚠️ Insufficient permissions to sync time. "
+                "Ensure sudo permissions are configured. Run: sudo bash scripts/setup/setup_time_sync_permissions.sh"
+            )
+        elif "cannot disable ntp" in stderr_str:
+            error_msg = (
+                "⚠️ Cannot disable NTP service. "
+                "Check if systemd-timesyncd is running and if user has sudo permissions. "
+                "Try: sudo systemctl stop systemd-timesyncd"
+            )
+        else:
+            error_msg = f"⚠️ Failed to sync time: {e.stderr if e.stderr else str(e)}"
+        
         sync_logger.error(error_msg)
         html_log_path = os.path.join(BASE_DIR, "conlog.html")
         with open(html_log_path, "a") as html_log:
