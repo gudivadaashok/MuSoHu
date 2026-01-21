@@ -187,15 +187,20 @@ async def health_check():
 async def get_sensor_status():
     """Get status of all helmet sensors"""
     try:
+        # Kill any stuck ros2 processes first (they pile up and cause hangs)
+        subprocess.run(['pkill', '-9', '-f', 'ros2 node list'], capture_output=True, timeout=1)
+        subprocess.run(['pkill', '-9', '-f', 'ros2 topic list'], capture_output=True, timeout=1)
+        
         # Source ROS2 and get node list
         ros_env = os.environ.copy()
         ros_env['ROS_DOMAIN_ID'] = '0'
         
+        # Use timeout command as additional safety net
         result = subprocess.run(
-            ['bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 node list 2>/dev/null'],
+            ['timeout', '3', 'bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 node list 2>/dev/null || echo ""'],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=4,  # Python timeout slightly longer than bash timeout
             env=ros_env
         )
         
@@ -203,10 +208,10 @@ async def get_sensor_status():
         
         # Get topics
         result_topics = subprocess.run(
-            ['bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 topic list 2>/dev/null'],
+            ['timeout', '3', 'bash', '-c', 'source /home/jetson/ros2_musohu_ws/install/setup.bash && ros2 topic list 2>/dev/null || echo ""'],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=4,
             env=ros_env
         )
         
@@ -278,9 +283,13 @@ async def get_sensor_status():
             'timestamp': datetime.now().isoformat()
         })
         
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"ROS2 command timeout: {e}")
+        # Kill any remaining stuck processes
+        subprocess.run(['pkill', '-9', '-f', 'ros2 node list'], capture_output=True, timeout=1)
+        subprocess.run(['pkill', '-9', '-f', 'ros2 topic list'], capture_output=True, timeout=1)
         return JSONResponse(content={
-            'error': 'ROS2 command timeout',
+            'error': 'ROS2 command timeout - daemon may be unresponsive. Try restarting ROS2 nodes.',
             'sensors': {},
             'total_nodes': 0,
             'total_topics': 0
@@ -1109,18 +1118,17 @@ async def background_time_sender():
     while True:
         await asyncio.sleep(1)
         now = datetime.now().astimezone()
-        # Format: 01/21/2026, 12:06:02 GMT+3 (Europe/Kirov)
+        # Format: 01/21/2026, 12:06:02 EST (America/New_York)
         time_str = now.strftime('%m/%d/%Y, %H:%M:%S')
-        # Get UTC offset
-        utc_offset = now.strftime('%z')  # e.g., +0300
-        gmt_offset = f"GMT{utc_offset[0]}{int(utc_offset[1:3])}" if utc_offset else "GMT"
+        # Get timezone abbreviation (EST, PST, etc.)
+        tz_abbr = now.strftime('%Z')
         # Get IANA timezone name from /etc/timezone (Linux) or tzinfo
         try:
             with open('/etc/timezone', 'r') as f:
                 tz_name = f.read().strip()
         except:
             tz_name = str(now.tzinfo)
-        server_time = f"{time_str} {gmt_offset} ({tz_name})"
+        server_time = f"{time_str} {tz_abbr} ({tz_name})"
         try:
             await sio.emit('server_time', {'time': server_time})
         except Exception as e:

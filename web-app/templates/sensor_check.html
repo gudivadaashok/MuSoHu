@@ -247,7 +247,15 @@
         // Sensor Status Functions
         async function loadSensorStatus() {
             try {
-                const response = await fetch('/api/sensors');
+                // Add timeout to prevent hanging
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 second timeout (5s+5s backend + buffer)
+                
+                const response = await fetch('/api/sensors', {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
                 const data = await response.json();
                 
                 if (data.error) {
@@ -261,8 +269,9 @@
                 
             } catch (error) {
                 console.error('Error loading sensor status:', error);
+                const errorMsg = error.name === 'AbortError' ? 'Request timeout - ROS2 may not be running' : 'Failed to load sensor status';
                 document.getElementById('sensor-container').innerHTML = 
-                    `<div class="loading" style="color: #f44336;">Failed to load sensor status</div>`;
+                    `<div class="loading" style="color: #f44336;">${errorMsg}</div>`;
             }
         }
 
