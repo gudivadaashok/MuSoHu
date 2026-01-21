@@ -31,6 +31,11 @@ scripts/
 │   ├── setup_web_service.sh
 │   ├── setup_production_web_service.sh
 │   └── test_production_setup.sh
+├── deploy/             # Deployment and production configuration
+│   ├── setup_production_web_service.sh
+│   ├── fix_ros2_environment.sh
+│   └── templates/
+│       └── musohu-web.service.template
 ├── utils/              # Utility scripts and helpers
 │   ├── logging_config.sh
 │   ├── detect_system_info.sh
@@ -71,6 +76,14 @@ Installation and configuration scripts for system components:
 - **setup_web_service.sh** - Setup Flask web service
 - **setup_production_web_service.sh** - Production web service setup
 - **test_production_setup.sh** - Verify production setup
+
+### Deployment Scripts (`deploy/`)
+
+Production deployment and configuration scripts:
+
+- **setup_production_web_service.sh** - Setup production web service with systemd
+- **fix_ros2_environment.sh** - Fix ROS2 environment for sensor detection in web service
+- **templates/** - Systemd service templates
 
 ### Utility Scripts (`utils/`)
 
@@ -219,6 +232,9 @@ sudo bash scripts/install/install_zed_sdk.sh
 
 # Setup production web service
 bash scripts/deploy/setup_production_web_service.sh
+
+# Fix ROS2 environment for sensor detection
+sudo bash scripts/deploy/fix_ros2_environment.sh
 ```
 
 #### Utility Scripts

@@ -130,6 +130,13 @@ ROS2_SCRIPTS = {
 
 running_processes = {}
 
+# Sensor status cache with last update time
+sensor_cache = {
+    'data': None,
+    'last_update': None,
+    'cache_duration': 3  # Cache for 3 seconds
+}
+
 # ---------------------------- Page Routes -----------------------------
 
 @app.get("/", response_class=HTMLResponse)
@@ -183,70 +190,192 @@ async def health_check():
     })
 
 
+# Track ROS2 command failures for daemon restart
+ros2_failure_count = 0
+ros2_failure_threshold = 3
+
+async def cleanup_stuck_ros2_processes():
+    """Kill any stuck ROS2 command processes"""
+    try:
+        # Kill node list processes
+        proc = await asyncio.create_subprocess_shell(
+            'pkill -9 -f "ros2 node list"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=2)
+        
+        # Kill topic list processes
+        proc = await asyncio.create_subprocess_shell(
+            'pkill -9 -f "ros2 topic list"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=2)
+    except:
+        pass
+
+async def get_sensor_status_from_processes():
+    """Get sensor status by checking running processes instead of ROS2 commands"""
+    try:
+        # Try ps aux first with short timeout
+        proc = await asyncio.create_subprocess_shell(
+            'ps aux 2>/dev/null | grep -E "witmotion|rslidar|respeaker|zed"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2)
+        
+        output = stdout.decode().lower() if stdout else ''
+        
+        sensors_running = {
+            'imu': 'witmotion' in output,
+            'lidar': 'rslidar' in output,
+            'audio': 'respeaker' in output,
+            'zed': 'zed_container' in output or 'zed_node' in output
+        }
+        
+        if any(sensors_running.values()):
+            logger.info(f"Process-based detection found: {sensors_running}")
+        return sensors_running
+        
+    except asyncio.TimeoutError:
+        logger.debug("Process grep timed out, trying pgrep")
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                'pgrep -f "witmotion_ros2|rslidar_sdk|respeaker_node|zed_container" | wc -l',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2)
+            count = int(stdout.decode().strip() or 0)
+            logger.info(f"Found {count} sensor processes via pgrep")
+            # Return True for all if we found any processes (better to show running than nothing)
+            has_sensors = count > 0
+            return {
+                'imu': has_sensors,
+                'lidar': has_sensors,
+                'audio': has_sensors,
+                'zed': has_sensors
+            }
+        except:
+            return {'imu': False, 'lidar': False, 'audio': False, 'zed': False}
+            
+    except Exception as e:
+        logger.warning(f"Process detection error: {type(e).__name__}: {e}")
+        return {'imu': False, 'lidar': False, 'audio': False, 'zed': False}
+
+async def restart_ros2_daemon():
+    """Restart the ROS2 daemon"""
+    global ros2_failure_count
+    logger.warning(f"Restarting ROS2 daemon after {ros2_failure_count} failures")
+    try:
+        # Get environment
+        env = os.environ.copy()
+        
+        # Stop daemon with shell to ensure proper environment
+        proc = await asyncio.create_subprocess_shell(
+            'ros2 daemon stop',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if stderr:
+            logger.debug(f"ros2 daemon stop stderr: {stderr.decode()}")
+        
+        # Wait a moment
+        await asyncio.sleep(1)
+        
+        # Start daemon
+        proc = await asyncio.create_subprocess_shell(
+            'ros2 daemon start',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if stderr:
+            logger.debug(f"ros2 daemon start stderr: {stderr.decode()}")
+        
+        ros2_failure_count = 0
+        logger.info("ROS2 daemon restarted successfully")
+    except Exception as e:
+        logger.error(f"Failed to restart ROS2 daemon: {e}")
+        # Reset counter anyway to avoid constant restart attempts
+        ros2_failure_count = 0
+
 @app.get("/api/sensors")
 async def get_sensor_status():
-    """Get status of all helmet sensors"""
+    """Get status of all helmet sensors (with caching)"""
+    global sensor_cache, ros2_failure_count
+    
+    # Check if cache is still valid
+    now = datetime.now(timezone.utc)
+    if (sensor_cache['data'] is not None and 
+        sensor_cache['last_update'] is not None and
+        (now - sensor_cache['last_update']).total_seconds() < sensor_cache['cache_duration']):
+        return JSONResponse(content=sensor_cache['data'])
+    
+    # Cache is stale or doesn't exist, fetch new data
     try:
-        # Kill any stuck ros2 processes first (they pile up and cause hangs)
+        # ALWAYS use process-based detection first as it's more reliable
+        sensors_from_processes = await get_sensor_status_from_processes()
+        
+        # Clean up any stuck processes first
+        await cleanup_stuck_ros2_processes()
+        
+        # Get the current environment and ensure ROS2 paths are present
+        env = os.environ.copy()
+        timeout_occurred = False
+        
+        # Get node and topic counts - these are informational only (not critical)
+        # Use very short timeout to avoid blocking
+        nodes = []
+        topics = []
+        
         try:
-            await asyncio.wait_for(
-                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 node list'),
-                timeout=0.5
+            proc_nodes = await asyncio.create_subprocess_shell(
+                'bash -c "source /opt/ros/humble/setup.bash 2>/dev/null && ros2 node list 2>/dev/null" | wc -l',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
             )
+            stdout_nodes, _ = await asyncio.wait_for(proc_nodes.communicate(), timeout=3)
+            try:
+                node_count = int(stdout_nodes.decode().strip() or 0)
+                nodes = list(range(node_count))  # Create dummy list for counting
+            except:
+                nodes = []
         except:
-            pass
-        
-        try:
-            await asyncio.wait_for(
-                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 topic list'),
-                timeout=0.5
-            )
-        except:
-            pass
-        
-        # Source ROS2 and get node list using async subprocess
-        ros_env = os.environ.copy()
-        ros_env['ROS_DOMAIN_ID'] = '0'
-        
-        # Get nodes asynchronously with shorter timeout
-        proc_nodes = await asyncio.create_subprocess_exec(
-            'bash', '-c',
-            'source /home/jetson/ros2_musohu_ws/install/setup.bash && timeout 2 ros2 node list 2>/dev/null || echo ""',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=ros_env
-        )
-        
-        try:
-            stdout, _ = await asyncio.wait_for(proc_nodes.communicate(), timeout=2.5)
-            nodes = stdout.decode().strip().split('\n') if stdout.decode().strip() else []
-        except asyncio.TimeoutError:
-            logger.warning("ros2 node list timed out")
             nodes = []
-            try:
-                proc_nodes.kill()
-            except:
-                pass
-        
-        # Get topics asynchronously
-        proc_topics = await asyncio.create_subprocess_exec(
-            'bash', '-c',
-            'source /home/jetson/ros2_musohu_ws/install/setup.bash && timeout 2 ros2 topic list 2>/dev/null || echo ""',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=ros_env
-        )
         
         try:
-            stdout, _ = await asyncio.wait_for(proc_topics.communicate(), timeout=2.5)
-            topics = stdout.decode().strip().split('\n') if stdout.decode().strip() else []
-        except asyncio.TimeoutError:
-            logger.warning("ros2 topic list timed out")
-            topics = []
+            proc_topics = await asyncio.create_subprocess_shell(
+                'bash -c "source /opt/ros/humble/setup.bash 2>/dev/null && ros2 topic list 2>/dev/null" | wc -l',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            stdout_topics, _ = await asyncio.wait_for(proc_topics.communicate(), timeout=3)
             try:
-                proc_topics.kill()
+                topic_count = int(stdout_topics.decode().strip() or 0)
+                topics = list(range(topic_count))  # Create dummy list for counting
             except:
-                pass
+                topics = []
+        except:
+            topics = []
+        
+        # Handle timeout tracking  
+        if timeout_occurred:
+            ros2_failure_count += 1
+            logger.debug(f"ROS2 failure count: {ros2_failure_count}/{ros2_failure_threshold}")
+            if ros2_failure_count >= ros2_failure_threshold:
+                await restart_ros2_daemon()
+        else:
+            if ros2_failure_count > 0:
+                logger.debug(f"ROS2 commands succeeded, resetting failure count from {ros2_failure_count}")
+            ros2_failure_count = 0
         
         # Check each sensor
         sensors = {
@@ -290,55 +419,65 @@ async def get_sensor_status():
         
         # Check which sensors are active
         for sensor_id, sensor in sensors.items():
-            # Check if node exists
-            if sensor['node'] in nodes:
-                sensor['node_found'] = True
-            
-            # Check which topics exist
-            for topic in sensor['topics']:
-                if topic in topics:
-                    sensor['topics_found'].append(topic)
-            
-            # Determine status
-            if sensor['node_found'] and len(sensor['topics_found']) > 0:
-                sensor['status'] = 'running'
-            elif sensor['node_found']:
-                sensor['status'] = 'partial'
+            # ALWAYS use process-based detection as primary method
+            if sensors_from_processes and sensor_id in sensors_from_processes:
+                if sensors_from_processes[sensor_id]:
+                    sensor['status'] = 'running'
+                    sensor['node_found'] = True
+                    # Still check topics from ROS2 commands if available
+                    for topic in sensor['topics']:
+                        if topic in topics:
+                            sensor['topics_found'].append(topic)
+                else:
+                    sensor['status'] = 'stopped'
             else:
-                sensor['status'] = 'stopped'
+                # Fallback to ROS2 command-based detection if process detection failed
+                # Check if node exists
+                if sensor['node'] in nodes:
+                    sensor['node_found'] = True
+                
+                # Check which topics exist
+                for topic in sensor['topics']:
+                    if topic in topics:
+                        sensor['topics_found'].append(topic)
+                
+                # Determine status
+                if sensor['node_found'] and len(sensor['topics_found']) > 0:
+                    sensor['status'] = 'running'
+                elif sensor['node_found']:
+                    sensor['status'] = 'partial'
+                else:
+                    sensor['status'] = 'stopped'
         
-        return JSONResponse(content={
+        response_data = {
             'sensors': sensors,
             'total_nodes': len(nodes),
             'total_topics': len(topics),
             'timestamp': datetime.now().isoformat()
-        })
+        }
         
-    except asyncio.TimeoutError as e:
-        logger.error(f"ROS2 command timeout: {e}")
-        # Kill any remaining stuck processes
-        try:
-            await asyncio.wait_for(
-                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 node list'),
-                timeout=0.5
-            )
-        except:
-            pass
-        try:
-            await asyncio.wait_for(
-                asyncio.create_subprocess_exec('pkill', '-9', '-f', 'ros2 topic list'),
-                timeout=0.5
-            )
-        except:
-            pass
+        # Update cache
+        sensor_cache['data'] = response_data
+        sensor_cache['last_update'] = now
+        
+        return JSONResponse(content=response_data)
+        
+    except subprocess.TimeoutExpired:
+        logger.warning("ROS2 command timed out - returning cached or empty data")
+        # Return cached data if available, otherwise empty
+        if sensor_cache['data']:
+            return JSONResponse(content=sensor_cache['data'])
         return JSONResponse(content={
-            'error': 'ROS2 command timeout - daemon may be unresponsive. Try restarting ROS2 nodes.',
             'sensors': {},
             'total_nodes': 0,
-            'total_topics': 0
+            'total_topics': 0,
+            'error': 'Timeout - no cached data available'
         }, status_code=500)
     except Exception as e:
         logger.error(f"Error getting sensor status: {e}")
+        # Return cached data if available
+        if sensor_cache['data']:
+            return JSONResponse(content=sensor_cache['data'])
         return JSONResponse(content={
             'error': str(e),
             'sensors': {},

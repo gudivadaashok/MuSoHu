@@ -15,6 +15,7 @@ Documentation for the MuSoHu Multi-Modal Social Human Navigation platform.
 | [PRODUCTION_SETUP.md](guides/PRODUCTION_SETUP.md) | Detailed systemd configuration and monitoring |
 | [INSTALLATION_SUMMARY.md](guides/INSTALLATION_SUMMARY.md) | Installation overview and next steps |
 
+
 ### Web Application
 
 | Document | Description |

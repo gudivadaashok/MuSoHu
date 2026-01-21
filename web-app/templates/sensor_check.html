@@ -249,7 +249,7 @@
             try {
                 // Add timeout to prevent hanging
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 6000); // 6 second timeout (2.5s+2.5s backend + buffer)
+                const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout (10s+10s backend + buffer)
                 
                 const response = await fetch('/api/sensors', {
                     signal: controller.signal

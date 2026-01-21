@@ -36,13 +36,19 @@ sudo bash scripts/install/install_ufw.sh
 sudo bash scripts/deploy/setup_production_web_service.sh
 ```
 
-### 3. Verify Setup
+### 3. Fix ROS2 Environment (if sensor detection not working)
+
+```bash
+sudo bash scripts/deploy/fix_ros2_environment.sh
+```
+
+### 4. Verify Setup
 
 ```bash
 bash scripts/test/test_production_setup.sh
 ```
 
-### 4. Manage Service
+### 5. Manage Service
 
 ```bash
 # Check status
