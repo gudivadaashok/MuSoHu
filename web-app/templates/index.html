@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MuSoHu - Script Manager</title>
     <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
     <!-- Navigation Header -->
@@ -33,6 +34,22 @@
     <div class="container">
         <!-- Toast Container -->
         <div id="toast-container"></div>
+
+        <!-- Time Sync Section -->
+        <div class="time-sync-section">
+            <h2>⏰ Time Synchronization</h2>
+            <div class="time-display">
+                <div class="time-row">
+                    <span class="time-label">Client Time:</span>
+                    <span id="client-time" class="time-value">--:--:--</span>
+                </div>
+                <div class="time-row">
+                    <span class="time-label">Server Time:</span>
+                    <span id="server-time" class="time-value">--:--:--</span>
+                </div>
+            </div>
+            <button onclick="syncTime()" class="btn-sync">Sync Time to Server</button>
+        </div>
 
         <div id="scripts-container"></div>
 
@@ -164,6 +181,69 @@
 
         // Refresh every 5 seconds
         setInterval(loadScripts, 5000);
+
+        // =================== Time Sync WebSocket ===================
+        const socket = io();
+
+        socket.on('connect', () => {
+            console.log('WebSocket connected');
+        });
+
+        socket.on('server_time', (data) => {
+            document.getElementById('server-time').textContent = data.time;
+        });
+
+        socket.on('disconnect', () => {
+            console.log('WebSocket disconnected');
+            document.getElementById('server-time').textContent = 'Disconnected';
+        });
+
+        // Update client time display every second
+        function updateClientTime() {
+            const now = new Date();
+            const timeString = now.toLocaleString('en-US', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false,
+                timeZoneName: 'short'
+            });
+            document.getElementById('client-time').textContent = timeString;
+        }
+
+        updateClientTime();
+        setInterval(updateClientTime, 1000);
+
+        // Sync time to server
+        async function syncTime() {
+            try {
+                const now = new Date();
+                const clientTime = now.toISOString();
+                const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+                const formData = new FormData();
+                formData.append('client_time', clientTime);
+                formData.append('client_timezone', clientTimezone);
+
+                const response = await fetch('/sync_time', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('✓ ' + result.message, 'success');
+                } else {
+                    showToast('✗ ' + result.message, 'error');
+                }
+            } catch (error) {
+                showToast('✗ Failed to sync time: ' + error.message, 'error');
+            }
+        }
     </script>
 </body>
 </html>

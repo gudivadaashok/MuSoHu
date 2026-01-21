@@ -2,24 +2,33 @@
 MuSoHu Web Application
 Manages ROS2 scripts, displays logs, and monitors system resources
 """
-from fastapi import FastAPI, Request, Query
+from fastapi import FastAPI, Request, Query, Form
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+import socketio
 import subprocess
 import os
 import shutil
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import yaml
 from file_discovery import FileDiscoveryService
+import asyncio
 
 # Get the base directory of this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Setup logger first
 logger = logging.getLogger("uvicorn")
+
+# Setup sync time logger
+sync_logger = logging.getLogger("sync_time")
+sync_handler = logging.FileHandler(os.path.join(BASE_DIR, "conlog.log"))
+sync_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+sync_logger.addHandler(sync_handler)
+sync_logger.setLevel(logging.INFO)
 
 # Prepare paths
 static_dir = os.path.join(BASE_DIR, "static")
@@ -32,6 +41,10 @@ if not os.path.exists(templates_dir):
 
 # Initialize FastAPI app
 app = FastAPI()
+
+# Initialize Socket.IO
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+socket_app = socketio.ASGIApp(sio, app)
 
 # Add middleware FIRST
 app.add_middleware(
@@ -810,10 +823,112 @@ async def stop_script(script_id: str):
             del running_processes[script_id]
         return JSONResponse(content={'message': f'Stopped {script_name}'})
 
+
+# ----------------------------- Time Sync -----------------------------
+
+@app.post("/sync_time")
+async def sync_time(
+    client_time: str = Form(...),
+    client_timezone: str = Form(default="UTC")
+):
+    """Sync server time with client time"""
+    try:
+        if not client_time:
+            client_time = datetime.now(timezone.utc).isoformat()
+        
+        try:
+            dt = datetime.fromisoformat(client_time.replace('Z', '+00:00'))
+        except Exception:
+            dt = datetime.now(timezone.utc)
+        
+        formatted = dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Set system time (requires sudo permissions)
+        result = subprocess.run(
+            ['sudo', 'date', '-u', '-s', formatted],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        
+        sync_logger.info(f"Time sync requested: {client_time} (UTC parsed: {formatted}) Timezone: {client_timezone}")
+        
+        # Log to HTML file
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div>Time sync: <b>{client_time}</b> (UTC: {formatted}) "
+                f"Timezone: <b>{client_timezone}</b> at {datetime.now().isoformat()}</div>\n"
+            )
+        
+        return JSONResponse(content={
+            'success': True,
+            'message': 'Time synced successfully!'
+        })
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to sync time: {e.stderr}"
+        sync_logger.error(error_msg)
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:red'>Sync error: {error_msg} at {datetime.now().isoformat()}</div>\n"
+            )
+        return JSONResponse(content={
+            'success': False,
+            'message': error_msg
+        }, status_code=500)
+    except Exception as e:
+        error_msg = f"Failed to sync time: {str(e)}"
+        sync_logger.error(error_msg)
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:red'>Sync error: {error_msg} at {datetime.now().isoformat()}</div>\n"
+            )
+        return JSONResponse(content={
+            'success': False,
+            'message': error_msg
+        }, status_code=500)
+
+
+# ----------------------------- WebSocket Events -----------------------------
+
+@sio.event
+async def connect(sid, environ):
+    """Handle WebSocket connection"""
+    logger.info(f"WebSocket client connected: {sid}")
+
+
+@sio.event
+async def disconnect(sid):
+    """Handle WebSocket disconnection"""
+    logger.info(f"WebSocket client disconnected: {sid}")
+
+
+async def background_time_sender():
+    """Background task to send server time via WebSocket"""
+    while True:
+        await asyncio.sleep(1)
+        server_time = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+        try:
+            await sio.emit('server_time', {'time': server_time})
+        except Exception as e:
+            # Ignore errors if no client connected
+            pass
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on app startup"""
+    asyncio.create_task(background_time_sender())
+    logger.info("Background time sender started")
+
+
 if __name__ == "__main__":
     import uvicorn
     server_config = config.get('server', {})
     host = server_config.get('host', '0.0.0.0')
     port = server_config.get('port', 8000)
-    uvicorn.run("app:app", host=host, port=port, reload=True)
+    # Use socket_app to include Socket.IO
+    uvicorn.run(socket_app, host=host, port=port)
 

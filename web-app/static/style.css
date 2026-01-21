@@ -260,6 +260,99 @@ body {
     margin: 0;
 }
 
+/* ============================================================================
+   TIME SYNC SECTION
+   ============================================================================ */
+
+.time-sync-section {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    color: white;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.time-sync-section h2 {
+    margin: 0 0 1.5rem 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.time-display {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.time-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 0;
+}
+
+.time-row:not(:last-child) {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.time-label {
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.time-value {
+    font-family: 'Courier New', monospace;
+    font-size: 1.2rem;
+    font-weight: 700;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+}
+
+.btn-sync {
+    background: white;
+    color: #667eea;
+    border: none;
+    padding: 0.875rem 2rem;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    width: 100%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-sync:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    background: #f8f8f8;
+}
+
+.btn-sync:active {
+    transform: translateY(0);
+}
+
+@media (max-width: 768px) {
+    .time-sync-section {
+        padding: 1.5rem;
+    }
+
+    .time-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .time-value {
+        width: 100%;
+        text-align: center;
+    }
+}
+
 /* Legacy styles - kept for backwards compatibility */
 .header {
     display: none;
