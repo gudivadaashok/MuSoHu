@@ -35,9 +35,11 @@
         <!-- Toast Container -->
         <div id="toast-container"></div>
 
+        <div id="scripts-container"></div>
+
         <!-- Time Sync Section -->
-        <div class="time-sync-section">
-            <h2>⏰ Time Synchronization</h2>
+        <div class="script-card time-sync-card">
+            <h3>⏰ Time Synchronization</h3>
             <div class="time-display">
                 <div class="time-row">
                     <span class="time-label">Client Time:</span>
@@ -48,10 +50,10 @@
                     <span id="server-time" class="time-value">--:--:--</span>
                 </div>
             </div>
-            <button onclick="syncTime()" class="btn-sync">Sync Time to Server</button>
+            <div style="margin-top: auto;">
+                <button onclick="syncTime()" class="btn-start">Sync Time to Server</button>
+            </div>
         </div>
-
-        <div id="scripts-container"></div>
 
         <footer class="footer">
             <p>Contact us at <a href="https://robotixx.cs.gmu.edu/index.html" target="_blank" rel="noopener noreferrer">RobotiXX Lab</a></p>
@@ -201,16 +203,20 @@
         // Update client time display every second
         function updateClientTime() {
             const now = new Date();
-            const timeString = now.toLocaleString('en-US', {
+            // Get local timezone
+            const localTimeString = now.toLocaleString('en-US', {
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit',
                 hour: '2-digit',
                 minute: '2-digit',
                 second: '2-digit',
-                hour12: false,
-                timeZoneName: 'short'
+                hour12: false
             });
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const tzAbbr = now.toLocaleString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+            
+            const timeString = `${localTimeString} ${tzAbbr} (${timezone})`;
             document.getElementById('client-time').textContent = timeString;
         }
 

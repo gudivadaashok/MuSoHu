@@ -909,7 +909,19 @@ async def background_time_sender():
     """Background task to send server time via WebSocket"""
     while True:
         await asyncio.sleep(1)
-        server_time = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+        now = datetime.now().astimezone()
+        # Format: 01/21/2026, 12:06:02 GMT+3 (Europe/Kirov)
+        time_str = now.strftime('%m/%d/%Y, %H:%M:%S')
+        # Get UTC offset
+        utc_offset = now.strftime('%z')  # e.g., +0300
+        gmt_offset = f"GMT{utc_offset[0]}{int(utc_offset[1:3])}" if utc_offset else "GMT"
+        # Get IANA timezone name from /etc/timezone (Linux) or tzinfo
+        try:
+            with open('/etc/timezone', 'r') as f:
+                tz_name = f.read().strip()
+        except:
+            tz_name = str(now.tzinfo)
+        server_time = f"{time_str} {gmt_offset} ({tz_name})"
         try:
             await sio.emit('server_time', {'time': server_time})
         except Exception as e:
