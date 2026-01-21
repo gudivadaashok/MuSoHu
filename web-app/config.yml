@@ -1,0 +1,66 @@
+# MuSoHu Web Application Configuration
+
+# Logging Configuration
+logging:
+  # Application log file settings
+  app_log:
+    enabled: true
+    path: logs/musohu.log
+    level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    max_size: 10485760  # 10 MB in bytes
+    backup_count: 5  # Number of backup files to keep
+    format: '[%(asctime)s] %(levelname)s: %(message)s'
+    date_format: '%Y-%m-%d %H:%M:%S'
+
+  # Console output
+  console:
+    enabled: true
+    level: INFO
+    format: '[%(asctime)s] %(levelname)s: %(message)s'
+    date_format: '%Y-%m-%d %H:%M:%S'
+
+# Server Configuration
+server:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+  threaded: true
+  default_lines: 500  # Default number of lines to return when viewing logs
+
+# Auto-refresh intervals (in seconds)
+refresh_intervals:
+  scripts: 5
+  disk_space: 10
+  logs: 5
+
+# Log Directories Configuration
+# Each entry must have a unique 'key' for namespacing and an absolute or relative 'path'
+log_dirs:
+  - key: webapp
+    path: logs/
+    description: "Web Application Logs"
+  - key: ros2
+    path: /home/jetson/.ros/log/
+    description: "ROS2 Helmet Logs"
+  - key: system
+    type: journalctl
+    description: "Systemd Journal Logs"
+
+# Log viewer settings
+log_viewer:
+  max_lines: 500  # Maximum number of log lines to display
+  cache_ttl: 30  # Cache file list for 30 seconds to reduce I/O
+  allowed_extensions:
+    - .log  # Restrict to .log to avoid listing non-log text files (e.g., requirements.txt)
+  # Directories to scan for log files automatically
+  scan_directories:
+    - enabled: true
+      path: /home/jetson/.ros/log/
+      name_prefix: ROS2-
+      description: "ROS2 runtime node logs"
+  # Enable search functionality
+  search:
+    enabled: true
+    max_results: 1000  # Maximum search results to return
+    case_sensitive: false
+

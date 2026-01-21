@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MuSoHu - Disk Space Monitor</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Navigation Header -->
+    <nav class="main-nav">
+        <div class="nav-container">
+            <div class="nav-left">
+                <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu">
+                    <span class="hamburger-line"></span>
+                    <span class="hamburger-line"></span>
+                    <span class="hamburger-line"></span>
+                </button>
+                <img src="/static/RobotiXX_gmu.gif" alt="RobotiXX Logo" class="nav-logo">
+            </div>
+            <div class="nav-center">
+                <h1 class="nav-title">MuSoHu</h1>
+                <p class="nav-subtitle">Multi-Modal Social Human Navigation</p>
+            </div>
+            <div class="nav-links" id="nav-links">
+                <a href="/" class="nav-link">Scripts</a>
+                <a href="/logs" class="nav-link">Logs</a>
+                <a href="/disk-space" class="nav-link active">Disk Space</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="page-header">
+            <h2>Disk Space Monitor</h2>
+            <p class="page-description">System Storage Information</p>
+        </div>
+
+        <div class="disk-space-full">
+            <div id="disk-info-full" class="disk-info-full">Loading...</div>
+        </div>
+
+        <footer class="footer">
+            <p>Contact us at <a href="https://robotixx.cs.gmu.edu/index.html" target="_blank" rel="noopener noreferrer">RobotiXX Lab</a></p>
+        </footer>
+    </div>
+
+    <script>
+        // Mobile Navigation Toggle
+        const navHamburger = document.getElementById('nav-hamburger');
+        const navLinks = document.getElementById('nav-links');
+
+        navHamburger.addEventListener('click', () => {
+            navHamburger.classList.toggle('active');
+            navLinks.classList.toggle('active');
+        });
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!navHamburger.contains(e.target) && !navLinks.contains(e.target)) {
+                navHamburger.classList.remove('active');
+                navLinks.classList.remove('active');
+            }
+        });
+
+        // Close menu when clicking a link
+        navLinks.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', () => {
+                navHamburger.classList.remove('active');
+                navLinks.classList.remove('active');
+            });
+        });
+    </script>
+    <script>
+        async function loadDiskSpace() {
+            try {
+                const response = await fetch('/api/disk-space');
+                const diskInfo = await response.json();
+
+                const diskInfoDiv = document.getElementById('disk-info-full');
+
+                if (diskInfo.error) {
+                    diskInfoDiv.innerHTML = `<p class="error">Error: ${diskInfo.error}</p>`;
+                } else {
+                    const percentUsed = parseFloat(diskInfo.percent_used);
+                    const statusClass = percentUsed > 80 ? 'danger' : percentUsed > 60 ? 'warning' : 'healthy';
+                    const statusIcon = percentUsed > 80 ? '!' : percentUsed > 60 ? '!' : '';
+
+                    diskInfoDiv.innerHTML = `
+                        <div class="disk-overview">
+                            <div class="disk-status-badge ${statusClass}">
+                                ${statusIcon} ${percentUsed > 80 ? 'Critical' : percentUsed > 60 ? 'Warning' : 'Healthy'}
+                            </div>
+                        </div>
+
+                        <div class="disk-stats-grid">
+                            <div class="disk-stat-card">
+                                <div class="stat-label">Total Space</div>
+                                <div class="stat-value">${diskInfo.total}</div>
+                            </div>
+
+                            <div class="disk-stat-card">
+                                <div class="stat-label">Used Space</div>
+                                <div class="stat-value">${diskInfo.used}</div>
+                            </div>
+
+                            <div class="disk-stat-card">
+                                <div class="stat-label">Free Space</div>
+                                <div class="stat-value">${diskInfo.free}</div>
+                            </div>
+
+                            <div class="disk-stat-card">
+                                <div class="stat-label">Usage</div>
+                                <div class="stat-value ${statusClass}">${diskInfo.percent_used}</div>
+                            </div>
+                        </div>
+
+                        <div class="disk-bar-container">
+                            <div class="disk-bar-label">Storage Usage</div>
+                            <div class="disk-bar">
+                                <div class="disk-bar-fill ${statusClass}" style="width: ${diskInfo.percent_used}">
+                                    <span class="disk-bar-text">${diskInfo.percent_used}</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                const diskInfoDiv = document.getElementById('disk-info-full');
+                diskInfoDiv.innerHTML = `<p class="error">Failed to load disk space: ${error.message}</p>`;
+            }
+        }
+
+        // Load disk space on page load
+        loadDiskSpace();
+
+        // Refresh every 10 seconds
+        setInterval(loadDiskSpace, 10000);
+    </script>
+</body>
+</html>

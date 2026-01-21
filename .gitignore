@@ -1,241 +1,97 @@
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-package-lock.json
-yarn.lock
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+.venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-.pytest_cache/
-htmlcov/
-.nox/
-coverage.xml
-*.cover
-.hypothesis/
-*.egg-info/
-dist/
-build/
 
-# Environment Variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Flask
+instance/
+.webassets-cache
+flask_session/
 
-# IDEs and Editors
-.vscode/
+# IDEs and editors
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
 # Logs
-logs/
 *.log
+logs/
+log/
+
+# Project-specific log directories
+helmet_logs/*.log
+helmet_logs/*.txt
+web-app/logs/*.log
+web-app/logs/*.txt
+scripts/logs/*.log
+scripts/logs/*.txt
+
+# Helmet logs - keep directory and README, ignore log files
+src/install/helmet_bringup/share/helmet_logs/*.log
+src/install/helmet_bringup/share/helmet_logs/*.txt
+!src/install/helmet_bringup/share/helmet_logs/README.md
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Node (if using any frontend frameworks)
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
 
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
+# ROS 2
+install/
+log/
+build/
+src/install/
+.catkin_workspace
+.catkin_tools/
 
-# Coverage directory used by tools like istanbul
-coverage/
-*.lcov
+# Custom project files
+*.pem
+*.key
+*.crt
 
-# nyc test coverage
-.nyc_output
-
-# Grunt intermediate storage
-.grunt
-
-# Bower dependency directory
-bower_components
-
-# node-waf configuration
-.lock-wscript
-
-# Compiled binary addons
-build/Release
-
-# Dependency directories
-jspm_packages/
-
-# TypeScript cache
-*.tsbuildinfo
-
-# Optional npm cache directory
-.npm
-
-# Optional eslint cache
-.eslintcache
-
-# Microbundle cache
-.rpt2_cache/
-.rts2_cache_cjs/
-.rts2_cache_es/
-.rts2_cache_umd/
-
-# Optional REPL history
-.node_repl_history
-
-# Output of 'npm pack'
-*.tgz
-
-# Yarn Integrity file
-.yarn-integrity
-
-# parcel-bundler cache
-.cache
-.parcel-cache
-
-# Next.js build output
-.next
-
-# Nuxt.js build / generate output
-.nuxt
-dist
-
-# Gatsby files
-.cache/
-public
-
-# Storybook build outputs
-.out
-.storybook-out
-
-# Temporary folders
-tmp/
-temp/
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-database.db
-
-# Audio/Media files (if storing locally for development)
-*.mp3
-*.wav
-*.flac
-*.aac
-*.ogg
-*.wma
-audio_files/
-media/
-
-# Docker
-docker-compose.override.yml  # Auto-generated on Linux for hardware access
-
-# Terraform
-*.tfstate
-*.tfstate.*
-.terraform/
-
-# AWS
-.aws/
-
-# Firebase
-.firebase/
-firebase-debug.log
-firestore-debug.log
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-Icon
-._*
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-*.cab
-*.msi
-*.msix
-*.msm
-*.msp
-*.lnk
-
-# Linux
-*~
-.fuse_hidden*
-.directory
-.Trash-*
-.nfs*
-
-# JetBrains IDEs
-.idea/
-*.iws
-*.iml
-*.ipr
-
-# Visual Studio Code
-.vscode/
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# Vim
-*.swp
-*.swo
-Session.vim
-
-# Emacs
-*~
-\#*\#
-/.emacs.desktop
-/.emacs.desktop.lock
-*.elc
-auto-save-list
-tramp
-.\#*
-
-# Project specific
-config/secrets.json
-uploads/
-user_data/
-backups/

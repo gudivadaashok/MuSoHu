@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MuSoHu - Log Viewer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Navigation Header -->
+    <nav class="main-nav">
+        <div class="nav-container">
+            <div class="nav-left">
+                <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu">
+                    <span class="hamburger-line"></span>
+                    <span class="hamburger-line"></span>
+                    <span class="hamburger-line"></span>
+                </button>
+                <img src="/static/RobotiXX_gmu.gif" alt="RobotiXX Logo" class="nav-logo">
+            </div>
+            <div class="nav-center">
+                <h1 class="nav-title">MuSoHu</h1>
+                <p class="nav-subtitle">Multi-Modal Social Human Navigation</p>
+            </div>
+            <div class="nav-links" id="nav-links">
+                <a href="/" class="nav-link">Scripts</a>
+                <a href="/logs" class="nav-link active">Logs</a>
+                <a href="/disk-space" class="nav-link">Disk Space</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="log-viewer-container">
+        <!-- Sidebar -->
+        <aside class="log-sidebar" id="log-sidebar">
+            <div class="sidebar-header">
+                <h2>Log Files</h2>
+                <p id="sidebar-hint" class="sidebar-hint">Select a file to view</p>
+            </div>
+            
+            <div class="sidebar-controls">
+                <button onclick="refreshFileList()" class="btn-sidebar-refresh" title="Refresh file list">
+                    <span class="icon-refresh">⟳</span> Refresh
+                </button>
+                <input type="text" id="file-filter" placeholder="Filter files..." class="file-filter-input">
+            </div>
+            
+            <div id="file-tree" class="file-tree">
+                <p class="loading">Loading files...</p>
+            </div>
+        </aside>
+        
+        <!-- Main Content -->
+        <main class="log-main">
+            <div class="log-header">
+                <div class="log-title">
+                    <h1 id="current-file-title">Select a file to view</h1>
+                    <p id="file-metadata" class="file-metadata"></p>
+                </div>
+                
+                <div class="log-actions">
+                    <button onclick="downloadCurrentFile()" class="btn-action" id="btn-download" disabled>
+                        <span class="icon-download">↓</span> Download
+                    </button>
+                    <!-- TODO Live Tail with socket -->
+                    <!-- <button onclick="toggleLiveTail()" class="btn-action" id="btn-live-tail">
+                        <span class="icon-play">▸</span> Live Tail
+                    </button> -->
+                </div>
+            </div>
+            
+            <div class="search-bar">
+                <input type="text" id="search-input" placeholder="Search in file..." class="search-input">
+                <button onclick="performSearch()" class="btn-search"><span class="icon-search">⌕</span> Search</button>
+                <button onclick="clearSearch()" class="btn-clear-search"><span class="icon-close">×</span> Clear</button>
+                <label class="search-option">
+                    <input type="checkbox" id="case-sensitive"> Case sensitive
+                </label>
+                <select id="line-limit" class="line-limit-select">
+                    <option value="100">Last 100 lines</option>
+                    <option value="250">Last 250 lines</option>
+                    <option value="500" selected>Last 500 lines</option>
+                    <option value="1000">Last 1000 lines</option>
+                    <option value="-1">All lines</option>
+                </select>
+            </div>
+            
+            <div id="log-viewer" class="log-viewer">
+                <div class="empty-state">
+                    <p><span class="icon-pointer">☜</span> Select a log file from the sidebar to view its contents</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+        <footer class="footer">
+            <p>Contact us at <a href="https://robotixx.cs.gmu.edu/index.html" target="_blank" rel="noopener noreferrer">RobotiXX Lab</a></p>
+        </footer>
+    </div>
+
+    <script>
+        // Mobile Navigation Toggle
+        const navHamburger = document.getElementById('nav-hamburger');
+        const navLinks = document.getElementById('nav-links');
+
+        navHamburger.addEventListener('click', () => {
+            navHamburger.classList.toggle('active');
+            navLinks.classList.toggle('active');
+        });
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!navHamburger.contains(e.target) && !navLinks.contains(e.target)) {
+                navHamburger.classList.remove('active');
+                navLinks.classList.remove('active');
+            }
+        });
+
+        // Close menu when clicking a link
+        navLinks.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', () => {
+                navHamburger.classList.remove('active');
+                navLinks.classList.remove('active');
+            });
+        });
+    </script>
+    <script>
+        let currentFileId = null;
+        let allFiles = {};
+        let liveTailInterval = null;
+        let isLiveTailActive = false;
+        let searchActive = false;
+
+        // Load file list on page load
+        async function loadFileList() {
+            try {
+                const response = await fetch('/api/files');
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError('Failed to load file list: ' + data.error);
+                    return;
+                }
+                
+                allFiles = data;
+                renderFileTree(data);
+            } catch (error) {
+                console.error('Error loading file list:', error);
+                showError('Failed to load file list: ' + error.message);
+            }
+        }
+
+        function renderFileTree(files) {
+            const fileTree = document.getElementById('file-tree');
+            fileTree.innerHTML = '';
+            
+            if (Object.keys(files).length === 0) {
+                fileTree.innerHTML = '<p class="no-files">No log files found</p>';
+                return;
+            }
+            
+            // Render each directory group
+            for (const [dirKey, dirData] of Object.entries(files)) {
+                const dirSection = document.createElement('div');
+                dirSection.className = 'directory-section';
+                
+                const dirHeader = document.createElement('div');
+                dirHeader.className = 'directory-header';
+                dirHeader.innerHTML = `
+                    <span class="directory-icon">▸</span>
+                    <span class="directory-name">${dirData.description}</span>
+                    <span class="file-count">${dirData.files.length}</span>
+                `;
+                dirHeader.onclick = () => toggleDirectory(dirKey);
+                
+                const fileList = document.createElement('div');
+                fileList.className = 'file-list';
+                fileList.id = `dir-${dirKey}`;
+                
+                // Render files in this directory
+                dirData.files.forEach(file => {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.dataset.fileId = file.id;
+                    fileItem.dataset.fileName = file.name.toLowerCase();
+                    
+                    const icon = file.extension === '.log' ? '●' : '○';
+                    
+                    fileItem.innerHTML = `
+                        <span class="file-icon">${icon}</span>
+                        <span class="file-name" title="${file.name}">${file.name}</span>
+                        <span class="file-size">${file.size_human}</span>
+                    `;
+                    
+                    fileItem.onclick = () => selectFile(file.id);
+                    fileList.appendChild(fileItem);
+                });
+                
+                dirSection.appendChild(dirHeader);
+                dirSection.appendChild(fileList);
+                fileTree.appendChild(dirSection);
+            }
+        }
+
+        function toggleDirectory(dirKey) {
+            const fileList = document.getElementById(`dir-${dirKey}`);
+            const dirHeader = fileList.previousElementSibling;
+            
+            if (fileList) {
+                fileList.classList.toggle('collapsed');
+                dirHeader.classList.toggle('expanded');
+            }
+        }
+
+        function selectFile(fileId) {
+            currentFileId = fileId;
+            searchActive = false;
+            
+            // Hide the sidebar hint
+            const sidebarHint = document.getElementById('sidebar-hint');
+            if (sidebarHint) {
+                sidebarHint.classList.add('hidden');
+            }
+            
+            // Update UI
+            document.querySelectorAll('.file-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            document.querySelector(`[data-file-id="${fileId}"]`)?.classList.add('active');
+            
+            // Enable download button
+            document.getElementById('btn-download').disabled = false;
+            
+            // Load file contents
+            loadFileContents();
+        }
+
+        async function loadFileContents() {
+            if (!currentFileId) return;
+            
+            const logViewer = document.getElementById('log-viewer');
+            logViewer.innerHTML = '<p class="loading">Loading file contents...</p>';
+            
+            try {
+                const lineLimit = document.getElementById('line-limit').value;
+                const url = `/api/file?file_id=${encodeURIComponent(currentFileId)}${lineLimit !== '-1' ? `&lines=${lineLimit}` : ''}`;
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                // Update file title and metadata
+                const metadata = data.metadata;
+                document.getElementById('current-file-title').textContent = metadata.name;
+                document.getElementById('file-metadata').innerHTML = `
+                    <span><span class="icon-folder">▸</span> ${metadata.dir_description}</span>
+                    <span><span class="icon-size">≡</span> ${metadata.size_human}</span>
+                    <span><span class="icon-time">⟲</span> Modified ${metadata.modified_time_human}</span>
+                    <span><span class="icon-lines">≣</span> ${data.total_lines} lines shown</span>
+                `;
+                
+                // Render file contents
+                renderFileContents(data.lines);
+                
+            } catch (error) {
+                console.error('Error loading file:', error);
+                showError('Failed to load file: ' + error.message);
+            }
+        }
+
+        function renderFileContents(lines) {
+            const logViewer = document.getElementById('log-viewer');
+            
+            if (lines.length === 0) {
+                logViewer.innerHTML = '<p class="no-content">File is empty</p>';
+                return;
+            }
+            
+            let html = '<div class="log-lines">';
+            lines.forEach((line, index) => {
+                const lineNum = index + 1;
+                const escapedLine = escapeHtml(line);
+                html += `
+                    <div class="log-line">
+                        <span class="line-number">${lineNum}</span>
+                        <span class="line-content">${escapedLine || '&nbsp;'}</span>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            
+            logViewer.innerHTML = html;
+            
+            // Auto-scroll to bottom
+            logViewer.scrollTop = logViewer.scrollHeight;
+        }
+
+        async function performSearch() {
+            if (!currentFileId) {
+                showError('Please select a file first');
+                return;
+            }
+            
+            const searchInput = document.getElementById('search-input');
+            const searchTerm = searchInput.value.trim();
+            
+            if (!searchTerm) {
+                showError('Please enter a search term');
+                return;
+            }
+            
+            searchActive = true;
+            const logViewer = document.getElementById('log-viewer');
+            logViewer.innerHTML = '<p class="loading">Searching...</p>';
+            
+            try {
+                const url = `/api/file?file_id=${encodeURIComponent(currentFileId)}&search=${encodeURIComponent(searchTerm)}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                renderSearchResults(data);
+                
+            } catch (error) {
+                console.error('Error searching:', error);
+                showError('Search failed: ' + error.message);
+            }
+        }
+
+        function renderSearchResults(data) {
+            const logViewer = document.getElementById('log-viewer');
+            
+            if (data.results.length === 0) {
+                logViewer.innerHTML = `<p class="no-content">No matches found for "${data.search_term}"</p>`;
+                return;
+            }
+            
+            let html = `
+                <div class="search-results-header">
+                    <h3>Search Results</h3>
+                    <p>Found ${data.total_matches} matches for "${data.search_term}"</p>
+                </div>
+                <div class="log-lines">
+            `;
+            
+            data.results.forEach(result => {
+                const escapedLine = escapeHtml(result.content);
+                const highlighted = highlightSearchTerm(escapedLine, data.search_term);
+                html += `
+                    <div class="log-line search-result">
+                        <span class="line-number">${result.line_number}</span>
+                        <span class="line-content">${highlighted}</span>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            logViewer.innerHTML = html;
+        }
+
+        function clearSearch() {
+            searchActive = false;
+            document.getElementById('search-input').value = '';
+            if (currentFileId) {
+                loadFileContents();
+            }
+        }
+
+        function toggleLiveTail() {
+            if (isLiveTailActive) {
+                stopLiveTail();
+            } else {
+                startLiveTail();
+            }
+        }
+
+        function startLiveTail() {
+            if (!currentFileId) {
+                showError('Please select a file first');
+                return;
+            }
+            
+            isLiveTailActive = true;
+            document.getElementById('btn-live-tail').innerHTML = '<span class="icon-pause">⊡</span> Stop Live Tail';
+            document.getElementById('btn-live-tail').classList.add('active');
+            
+            // Refresh every 2 seconds
+            liveTailInterval = setInterval(() => {
+                if (!searchActive) {
+                    loadFileContents();
+                }
+            }, 2000);
+        }
+
+        function stopLiveTail() {
+            isLiveTailActive = false;
+            document.getElementById('btn-live-tail').innerHTML = '<span class="icon-play">▸</span> Live Tail';
+            document.getElementById('btn-live-tail').classList.remove('active');
+            
+            if (liveTailInterval) {
+                clearInterval(liveTailInterval);
+                liveTailInterval = null;
+            }
+        }
+
+        function downloadCurrentFile() {
+            if (!currentFileId) return;
+            
+            const downloadUrl = `/api/file/download?file_id=${encodeURIComponent(currentFileId)}`;
+            window.open(downloadUrl, '_blank');
+        }
+
+        function refreshFileList() {
+            loadFileList();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function highlightSearchTerm(text, searchTerm) {
+            const regex = new RegExp(`(${escapeRegex(searchTerm)})`, 'gi');
+            return text.replace(regex, '<mark>$1</mark>');
+        }
+
+        function escapeRegex(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        function showError(message) {
+            const logViewer = document.getElementById('log-viewer');
+            logViewer.innerHTML = `<p class="error-message"><span class="icon-warning">⚠</span> ${message}</p>`;
+        }
+
+        // File filter
+        document.getElementById('file-filter').addEventListener('input', (e) => {
+            const filterText = e.target.value.toLowerCase();
+            document.querySelectorAll('.file-item').forEach(item => {
+                const fileName = item.dataset.fileName;
+                if (fileName.includes(filterText)) {
+                    item.style.display = 'flex';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+        });
+
+        // Line limit change
+        document.getElementById('line-limit').addEventListener('change', () => {
+            if (currentFileId && !searchActive) {
+                loadFileContents();
+            }
+        });
+
+        // Search on Enter key
+        document.getElementById('search-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        // Initialize
+        loadFileList();
+        
+        // Auto-refresh file list every 30 seconds
+        setInterval(loadFileList, 30000);
+    </script>
+</body>
+</html>

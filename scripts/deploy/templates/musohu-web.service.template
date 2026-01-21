@@ -1,0 +1,49 @@
+[Unit]
+Description=MuSoHu Web Service for Script Management
+Documentation=https://github.com/gudivadaashok/MuSoHu
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=USER_PLACEHOLDER
+Group=GROUP_PLACEHOLDER
+WorkingDirectory=WEB_APP_DIR_PLACEHOLDER
+Environment="PATH=WEB_APP_DIR_PLACEHOLDER/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+# Main process - Run with uvicorn ASGI server
+ExecStart=WEB_APP_DIR_PLACEHOLDER/venv/bin/uvicorn app:app --host 0.0.0.0 --port PORT_PLACEHOLDER
+
+# Restart Configuration - Always restart on failure
+Restart=always
+RestartSec=10
+
+# Start limit configuration - No limit on restart attempts
+StartLimitBurst=0
+
+# Watchdog configuration (optional - requires systemd notify support)
+# WatchdogSec=30
+
+# Security hardening (optional)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits (lightweight for single user - 256MB RAM, 25% CPU)
+# Typical usage: 50-100MB RAM, <10% CPU for single user
+# Adjust if needed for multiple concurrent users
+MemoryMax=256M
+MemoryHigh=200M
+CPUQuota=25%
+
+# Logging - All logs go to systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=musohu-web
+
+# Working directory permissions
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
