@@ -27,7 +27,9 @@ StartLimitBurst=0
 # WatchdogSec=30
 
 # Security hardening (optional)
-NoNewPrivileges=true
+# Note: NoNewPrivileges=true is disabled to allow sudo for time sync operations
+# If this service needs to run sudo commands (like timedatectl), NoNewPrivileges must be false
+NoNewPrivileges=false
 PrivateTmp=true
 
 # Resource limits (lightweight for single user - 256MB RAM, 25% CPU)

@@ -260,6 +260,60 @@ body {
     margin: 0;
 }
 
+/* ============================================================================
+   TIME SYNC SECTION
+   ============================================================================ */
+
+.time-sync-card {
+    margin-top: 1rem;
+}
+
+.time-sync-card .time-display {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+}
+
+.time-sync-card .time-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+}
+
+.time-sync-card .time-row:not(:last-child) {
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.time-sync-card .time-label {
+    font-weight: 600;
+    color: #555;
+}
+
+.time-sync-card .time-value {
+    font-family: 'Courier New', monospace;
+    font-size: 0.95rem;
+    color: #333;
+    background: #fff;
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+}
+
+@media (max-width: 768px) {
+    .time-sync-card .time-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .time-sync-card .time-value {
+        width: 100%;
+        text-align: center;
+    }
+}
+
 /* Legacy styles - kept for backwards compatibility */
 .header {
     display: none;

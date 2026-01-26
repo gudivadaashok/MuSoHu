@@ -100,6 +100,37 @@ Note: Port 80 requires root privileges. Alternatives:
 
 ---
 
+## Troubleshooting
+
+### Sensor Status Not Working
+
+If the "Helmet Sensor Status" page shows 0 nodes/topics when sensors are running:
+
+**Quick Fix:**
+```bash
+sudo bash scripts/deploy/fix_ros2_environment.sh
+```
+
+**Verify it's working:**
+```bash
+# Start sensors first
+curl -X POST http://localhost:8000/api/scripts/helmet_nodes/start
+
+# Wait for sensors to start
+sleep 10
+
+# Check sensor status
+curl http://localhost:8000/api/sensors | python3 -m json.tool
+```
+
+**Expected result:** Should show detected nodes and topics.
+
+**Root cause:** The systemd service needs complete ROS2 environment variables for proper sensor discovery.
+
+**Documentation:** See [FIX_SENSOR_STATUS.md](../FIX_SENSOR_STATUS.md) for detailed troubleshooting.
+
+---
+
 ---
 
 ## Best Practices

@@ -17,7 +17,7 @@ audio_capture_node:
 respeaker_node:
   ros__parameters:
     # Microphone array configuration
-    mic_array_channels: 4
+    mic_array_channels: 6
     
     # Audio processing
     enable_vad: true          # Voice Activity Detection

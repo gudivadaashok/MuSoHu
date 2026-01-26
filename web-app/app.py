@@ -2,24 +2,34 @@
 MuSoHu Web Application
 Manages ROS2 scripts, displays logs, and monitors system resources
 """
-from fastapi import FastAPI, Request, Query
+from fastapi import FastAPI, Request, Query, Form
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+import socketio
 import subprocess
 import os
 import shutil
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import yaml
+import pytz
 from file_discovery import FileDiscoveryService
+import asyncio
 
 # Get the base directory of this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Setup logger first
 logger = logging.getLogger("uvicorn")
+
+# Setup sync time logger
+sync_logger = logging.getLogger("sync_time")
+sync_handler = logging.FileHandler(os.path.join(BASE_DIR, "conlog.log"))
+sync_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+sync_logger.addHandler(sync_handler)
+sync_logger.setLevel(logging.INFO)
 
 # Prepare paths
 static_dir = os.path.join(BASE_DIR, "static")
@@ -32,6 +42,10 @@ if not os.path.exists(templates_dir):
 
 # Initialize FastAPI app
 app = FastAPI()
+
+# Initialize Socket.IO
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+socket_app = socketio.ASGIApp(sio, app)
 
 # Add middleware FIRST
 app.add_middleware(
@@ -116,6 +130,13 @@ ROS2_SCRIPTS = {
 
 running_processes = {}
 
+# Sensor status cache with last update time
+sensor_cache = {
+    'data': None,
+    'last_update': None,
+    'cache_duration': 3  # Cache for 3 seconds
+}
+
 # ---------------------------- Page Routes -----------------------------
 
 @app.get("/", response_class=HTMLResponse)
@@ -148,6 +169,14 @@ async def logs(request: Request):
     })
 
 
+@app.get("/sensor-check", response_class=HTMLResponse)
+async def sensor_check(request: Request):
+    """Sensor check guide page"""
+    return templates.TemplateResponse("sensor_check.html", {
+        "request": request
+    })
+
+
 # ============================================================================
 # API Routes - Health Check
 # ----------------------- API Routes - Health Check --------------------------
@@ -159,6 +188,302 @@ async def health_check():
         'running_scripts': len(running_processes),
         'timestamp': datetime.now().isoformat()
     })
+
+
+# Track ROS2 command failures for daemon restart
+ros2_failure_count = 0
+ros2_failure_threshold = 3
+
+async def cleanup_stuck_ros2_processes():
+    """Kill any stuck ROS2 command processes"""
+    try:
+        # Kill node list processes
+        proc = await asyncio.create_subprocess_shell(
+            'pkill -9 -f "ros2 node list"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=2)
+        
+        # Kill topic list processes
+        proc = await asyncio.create_subprocess_shell(
+            'pkill -9 -f "ros2 topic list"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=2)
+    except:
+        pass
+
+async def get_sensor_status_from_processes():
+    """Get sensor status by checking running processes instead of ROS2 commands"""
+    try:
+        # Try ps aux first with short timeout
+        proc = await asyncio.create_subprocess_shell(
+            'ps aux 2>/dev/null | grep -E "witmotion|rslidar|respeaker|zed"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2)
+        
+        output = stdout.decode().lower() if stdout else ''
+        
+        sensors_running = {
+            'imu': 'witmotion' in output,
+            'lidar': 'rslidar' in output,
+            'audio': 'respeaker' in output,
+            'zed': 'zed_container' in output or 'zed_node' in output
+        }
+        
+        if any(sensors_running.values()):
+            logger.info(f"Process-based detection found: {sensors_running}")
+        return sensors_running
+        
+    except asyncio.TimeoutError:
+        logger.debug("Process grep timed out, trying pgrep")
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                'pgrep -f "witmotion_ros2|rslidar_sdk|respeaker_node|zed_container" | wc -l',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2)
+            count = int(stdout.decode().strip() or 0)
+            logger.info(f"Found {count} sensor processes via pgrep")
+            # Return True for all if we found any processes (better to show running than nothing)
+            has_sensors = count > 0
+            return {
+                'imu': has_sensors,
+                'lidar': has_sensors,
+                'audio': has_sensors,
+                'zed': has_sensors
+            }
+        except:
+            return {'imu': False, 'lidar': False, 'audio': False, 'zed': False}
+            
+    except Exception as e:
+        logger.warning(f"Process detection error: {type(e).__name__}: {e}")
+        return {'imu': False, 'lidar': False, 'audio': False, 'zed': False}
+
+async def restart_ros2_daemon():
+    """Restart the ROS2 daemon"""
+    global ros2_failure_count
+    logger.warning(f"Restarting ROS2 daemon after {ros2_failure_count} failures")
+    try:
+        # Get environment
+        env = os.environ.copy()
+        
+        # Stop daemon with shell to ensure proper environment
+        proc = await asyncio.create_subprocess_shell(
+            'ros2 daemon stop',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if stderr:
+            logger.debug(f"ros2 daemon stop stderr: {stderr.decode()}")
+        
+        # Wait a moment
+        await asyncio.sleep(1)
+        
+        # Start daemon
+        proc = await asyncio.create_subprocess_shell(
+            'ros2 daemon start',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if stderr:
+            logger.debug(f"ros2 daemon start stderr: {stderr.decode()}")
+        
+        ros2_failure_count = 0
+        logger.info("ROS2 daemon restarted successfully")
+    except Exception as e:
+        logger.error(f"Failed to restart ROS2 daemon: {e}")
+        # Reset counter anyway to avoid constant restart attempts
+        ros2_failure_count = 0
+
+@app.get("/api/sensors")
+async def get_sensor_status():
+    """Get status of all helmet sensors (with caching)"""
+    global sensor_cache, ros2_failure_count
+    
+    # Check if cache is still valid
+    now = datetime.now(timezone.utc)
+    if (sensor_cache['data'] is not None and 
+        sensor_cache['last_update'] is not None and
+        (now - sensor_cache['last_update']).total_seconds() < sensor_cache['cache_duration']):
+        return JSONResponse(content=sensor_cache['data'])
+    
+    # Cache is stale or doesn't exist, fetch new data
+    try:
+        # ALWAYS use process-based detection first as it's more reliable
+        sensors_from_processes = await get_sensor_status_from_processes()
+        
+        # Clean up any stuck processes first
+        await cleanup_stuck_ros2_processes()
+        
+        # Get the current environment and ensure ROS2 paths are present
+        env = os.environ.copy()
+        timeout_occurred = False
+        
+        # Get node and topic counts - these are informational only (not critical)
+        # Use very short timeout to avoid blocking
+        nodes = []
+        topics = []
+        
+        try:
+            proc_nodes = await asyncio.create_subprocess_shell(
+                'bash -c "source /opt/ros/humble/setup.bash 2>/dev/null && ros2 node list 2>/dev/null" | wc -l',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            stdout_nodes, _ = await asyncio.wait_for(proc_nodes.communicate(), timeout=3)
+            try:
+                node_count = int(stdout_nodes.decode().strip() or 0)
+                nodes = list(range(node_count))  # Create dummy list for counting
+            except:
+                nodes = []
+        except:
+            nodes = []
+        
+        try:
+            proc_topics = await asyncio.create_subprocess_shell(
+                'bash -c "source /opt/ros/humble/setup.bash 2>/dev/null && ros2 topic list 2>/dev/null" | wc -l',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            stdout_topics, _ = await asyncio.wait_for(proc_topics.communicate(), timeout=3)
+            try:
+                topic_count = int(stdout_topics.decode().strip() or 0)
+                topics = list(range(topic_count))  # Create dummy list for counting
+            except:
+                topics = []
+        except:
+            topics = []
+        
+        # Handle timeout tracking  
+        if timeout_occurred:
+            ros2_failure_count += 1
+            logger.debug(f"ROS2 failure count: {ros2_failure_count}/{ros2_failure_threshold}")
+            if ros2_failure_count >= ros2_failure_threshold:
+                await restart_ros2_daemon()
+        else:
+            if ros2_failure_count > 0:
+                logger.debug(f"ROS2 commands succeeded, resetting failure count from {ros2_failure_count}")
+            ros2_failure_count = 0
+        
+        # Check each sensor
+        sensors = {
+            'imu': {
+                'name': 'IMU',
+                'icon': '',
+                'node': '/imu_node',
+                'topics': ['/imu_node/cali'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            },
+            'lidar': {
+                'name': 'LiDAR',
+                'icon': '',
+                'node': '/lidar_node',
+                'topics': ['/rslidar_points'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            },
+            'audio': {
+                'name': 'Audio (ReSpeaker)',
+                'icon': '',
+                'node': '/respeaker_node',
+                'topics': ['/audio', '/doa', '/speech_audio'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            },
+            'zed': {
+                'name': 'ZED Camera',
+                'icon': '',
+                'node': '/zed2i/zed_node',
+                'topics': ['/zed2i/zed_node/rgb/image_rect_color', '/zed2i/zed_node/depth/depth_registered'],
+                'status': 'stopped',
+                'node_found': False,
+                'topics_found': []
+            }
+        }
+        
+        # Check which sensors are active
+        for sensor_id, sensor in sensors.items():
+            # ALWAYS use process-based detection as primary method
+            if sensors_from_processes and sensor_id in sensors_from_processes:
+                if sensors_from_processes[sensor_id]:
+                    sensor['status'] = 'running'
+                    sensor['node_found'] = True
+                    # Still check topics from ROS2 commands if available
+                    for topic in sensor['topics']:
+                        if topic in topics:
+                            sensor['topics_found'].append(topic)
+                else:
+                    sensor['status'] = 'stopped'
+            else:
+                # Fallback to ROS2 command-based detection if process detection failed
+                # Check if node exists
+                if sensor['node'] in nodes:
+                    sensor['node_found'] = True
+                
+                # Check which topics exist
+                for topic in sensor['topics']:
+                    if topic in topics:
+                        sensor['topics_found'].append(topic)
+                
+                # Determine status
+                if sensor['node_found'] and len(sensor['topics_found']) > 0:
+                    sensor['status'] = 'running'
+                elif sensor['node_found']:
+                    sensor['status'] = 'partial'
+                else:
+                    sensor['status'] = 'stopped'
+        
+        response_data = {
+            'sensors': sensors,
+            'total_nodes': len(nodes),
+            'total_topics': len(topics),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Update cache
+        sensor_cache['data'] = response_data
+        sensor_cache['last_update'] = now
+        
+        return JSONResponse(content=response_data)
+        
+    except subprocess.TimeoutExpired:
+        logger.warning("ROS2 command timed out - returning cached or empty data")
+        # Return cached data if available, otherwise empty
+        if sensor_cache['data']:
+            return JSONResponse(content=sensor_cache['data'])
+        return JSONResponse(content={
+            'sensors': {},
+            'total_nodes': 0,
+            'total_topics': 0,
+            'error': 'Timeout - no cached data available'
+        }, status_code=500)
+    except Exception as e:
+        logger.error(f"Error getting sensor status: {e}")
+        # Return cached data if available
+        if sensor_cache['data']:
+            return JSONResponse(content=sensor_cache['data'])
+        return JSONResponse(content={
+            'error': str(e),
+            'sensors': {},
+            'total_nodes': 0,
+            'total_topics': 0
+        }, status_code=500)
 
 
 # ============================================================================
@@ -810,10 +1135,502 @@ async def stop_script(script_id: str):
             del running_processes[script_id]
         return JSONResponse(content={'message': f'Stopped {script_name}'})
 
+
+# ----------------------------- Time Sync -----------------------------
+
+@app.post("/sync_time")
+async def sync_time(
+    client_time: str = Form(...),
+    client_timezone: str = Form(default="UTC")
+):
+    """Sync server time with client time"""
+    try:
+        if not client_time:
+            client_time = datetime.now(timezone.utc).isoformat()
+        
+        # Parse the client time (which is in ISO format, UTC)
+        try:
+            dt_utc = datetime.fromisoformat(client_time.replace('Z', '+00:00'))
+        except Exception:
+            dt_utc = datetime.now(timezone.utc)
+        
+        sync_logger.info(f"Time sync requested - Client UTC time: {client_time}, Parsed: {dt_utc}, Target timezone: {client_timezone}")
+        
+        # First, set timezone if provided and valid (must be done before setting time)
+        timezone_set = False
+        if client_timezone and client_timezone != "UTC":
+            try:
+                tz_result = subprocess.run(
+                    ['sudo', 'timedatectl', 'set-timezone', client_timezone],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                sync_logger.info(f"Timezone set to: {client_timezone}")
+                timezone_set = True
+                # Give system a moment to apply timezone change
+                import time
+                time.sleep(0.5)
+            except subprocess.CalledProcessError as e:
+                if "no new privileges" in e.stderr:
+                    sync_logger.warning(f"Container 'no_new_privileges' flag prevents timezone change. Continuing without timezone change.")
+                else:
+                    sync_logger.warning(f"Could not set timezone to {client_timezone}: {e}")
+            except Exception as e:
+                sync_logger.warning(f"Could not set timezone to {client_timezone}: {e}")
+        
+        # Disable NTP to allow manual time setting
+        ntp_disabled = False
+        try:
+            sync_logger.info("Attempting to disable NTP with sudo...")
+            result = subprocess.run(
+                ['sudo', '-n', 'timedatectl', 'set-ntp', 'false'],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            sync_logger.info("NTP disabled successfully")
+            ntp_disabled = True
+            # Give system a moment to fully disable NTP
+            import time
+            time.sleep(0.5)
+        except subprocess.CalledProcessError as e:
+            sync_logger.error(f"NTP disable failed - returncode: {e.returncode}, stderr: '{e.stderr}', stdout: '{e.stdout}'")
+            error_text = (str(e.stderr) + str(e.stdout)).lower()
+            if "no new privileges" in error_text:
+                sync_logger.warning(f"Container 'no_new_privileges' flag prevents NTP control. Continuing without disabling NTP.")
+            elif "password" in error_text or "sudo" in error_text:
+                sync_logger.error(f"Sudo requires password - check /etc/sudoers.d/musohu-time-sync permissions")
+                raise subprocess.CalledProcessError(
+                    e.returncode, e.cmd, 
+                    output=e.stdout,
+                    stderr=f"SUDO_PASSWORD_REQUIRED: Sudo requires password. Check permissions setup."
+                )
+            else:
+                sync_logger.error(f"Failed to disable NTP: {e.stderr}")
+                raise subprocess.CalledProcessError(
+                    e.returncode, e.cmd, 
+                    output=e.stdout,
+                    stderr=f"Cannot disable NTP. Error: {e.stderr}"
+                )
+        except Exception as e:
+            sync_logger.error(f"Could not disable NTP (unexpected error): {e}")
+            raise
+        
+        # IMPORTANT: timedatectl set-time interprets time in LOCAL timezone
+        # Client sends UTC time, but we need to convert it to local time for timedatectl
+        # Example: Client at 04:47 EST sends 09:47 UTC
+        # We need to set local time to 04:47, not 09:47
+        
+        # Convert UTC to local time for the target timezone
+        import pytz
+        if timezone_set and client_timezone:
+            try:
+                target_tz = pytz.timezone(client_timezone)
+                dt_local = dt_utc.astimezone(target_tz)
+                formatted_local = dt_local.strftime('%Y-%m-%d %H:%M:%S')
+                sync_logger.info(f"Converted UTC {dt_utc} to local {formatted_local} ({client_timezone})")
+            except Exception as e:
+                sync_logger.error(f"Failed to convert timezone: {e}. Using UTC.")
+                formatted_local = dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            formatted_local = dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+        
+        sync_logger.info(f"Setting system time to: {formatted_local} (will be interpreted as local time)")
+        
+        # Set system time using timedatectl (interprets as LOCAL time)
+        try:
+            sync_logger.info(f"Running: sudo -n timedatectl set-time {formatted_local}")
+            result = subprocess.run(
+                ['sudo', '-n', 'timedatectl', 'set-time', formatted_local],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            sync_logger.info(f"Time set successfully - stdout: '{result.stdout}', stderr: '{result.stderr}'")
+        except subprocess.CalledProcessError as e:
+            sync_logger.error(f"Time set failed - returncode: {e.returncode}, stderr: '{e.stderr}', stdout: '{e.stdout}'")
+            error_text = (str(e.stderr) + str(e.stdout)).lower()
+            
+            # Check for specific error conditions
+            if "password" in error_text or ("sudo" in error_text and "try again" in error_text):
+                sync_logger.error("Sudo requires password - permissions not configured correctly")
+                raise subprocess.CalledProcessError(
+                    1, 'timedatectl',
+                    output="",
+                    stderr="SUDO_PASSWORD_REQUIRED: Sudo requires password for time setting. Run: sudo bash scripts/setup/setup_time_sync_permissions.sh"
+                )
+            elif "automatic time synchronization is enabled" in error_text:
+                sync_logger.error("NTP is still enabled - cannot set time manually")
+                raise subprocess.CalledProcessError(
+                    1, 'timedatectl',
+                    output="",
+                    stderr="NTP_ENABLED: Automatic time synchronization is still enabled. Cannot set time manually."
+                )
+            elif "no new privileges" in error_text:
+                # In containers with no_new_privileges, try to set time directly if running as root
+                try:
+                    import time
+                    result = subprocess.run(
+                        ['timedatectl', 'set-time', formatted_local],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                except Exception as direct_e:
+                    sync_logger.warning(f"Container 'no_new_privileges' flag prevents time sync via timedatectl.")
+                    raise subprocess.CalledProcessError(
+                        1, 'timedatectl',
+                        output="",
+                        stderr="DOCKER_NO_PRIVILEGES: Container 'no_new_privileges' flag set. Time sync requires: docker run --cap-add=SYS_TIME or proper CAP_SYS_TIME capabilities"
+                    )
+            elif "permission denied" in error_text:
+                sync_logger.error("Permission denied when trying to set time")
+                raise subprocess.CalledProcessError(
+                    1, 'timedatectl',
+                    output="",
+                    stderr="PERMISSION_DENIED: The user needs CAP_SYS_TIME capability or must be in the 'systemd-timesync' group."
+                )
+            else:
+                # Re-raise with original error
+                raise
+        
+        # Verify the time was set
+        verify_result = subprocess.run(
+            ['timedatectl', 'status'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        sync_logger.info(f"Time sync completed. Verification:\n{verify_result.stdout}")
+        
+        # Get the new system time in local timezone
+        new_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')
+        
+        # Log to HTML file
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:green;font-weight:bold'>✓ Time sync SUCCESS: Client UTC <b>{client_time}</b> "
+                f"→ Server local time now: <b>{new_time}</b> (Timezone: {client_timezone if timezone_set else 'unchanged'})</div>\n"
+            )
+        
+        return JSONResponse(content={
+            'success': True,
+            'message': f'✓ Server synced! Local time: {new_time}'
+        })
+    except subprocess.CalledProcessError as e:
+        # Provide appropriate error message based on the actual error
+        stderr_str = str(e.stderr).lower() if e.stderr else ""
+        
+        if "sudo_password_required" in stderr_str:
+            error_msg = (
+                "⚠️ Sudo permissions not configured. "
+                "Run: sudo bash scripts/setup/setup_time_sync_permissions.sh"
+            )
+        elif "ntp_enabled" in stderr_str:
+            error_msg = (
+                "⚠️ Cannot set time: NTP (Network Time Protocol) is still enabled. "
+                "The system must disable NTP before manual time setting. "
+                "Check if timesyncd service is running or if NTP cannot be disabled."
+            )
+        elif "docker_no_privileges" in stderr_str or "no_new_privileges" in stderr_str:
+            error_msg = (
+                "⚠️ Time sync unavailable in Docker container. "
+                "Add --cap-add=SYS_TIME flag when running docker, or disable the 'no_new_privileges' security option. "
+                "Example: docker run --cap-add=SYS_TIME ..."
+            )
+        elif "permission_denied" in stderr_str or "permission denied" in stderr_str:
+            error_msg = (
+                "⚠️ Insufficient permissions to sync time. "
+                "Ensure sudo permissions are configured. Run: sudo bash scripts/setup/setup_time_sync_permissions.sh"
+            )
+        elif "cannot disable ntp" in stderr_str:
+            error_msg = (
+                "⚠️ Cannot disable NTP service. "
+                "Check if systemd-timesyncd is running and if user has sudo permissions. "
+                "Try: sudo systemctl stop systemd-timesyncd"
+            )
+        else:
+            error_msg = f"⚠️ Failed to sync time: {e.stderr if e.stderr else str(e)}"
+        
+        sync_logger.error(error_msg)
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:red'>Sync error: {error_msg} at {datetime.now().isoformat()}</div>\n"
+            )
+        return JSONResponse(content={
+            'success': False,
+            'message': error_msg
+        }, status_code=500)
+    except subprocess.TimeoutExpired:
+        error_msg = "Time sync command timed out"
+        sync_logger.error(error_msg)
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:red'>Sync timeout: {error_msg} at {datetime.now().isoformat()}</div>\n"
+            )
+        return JSONResponse(content={
+            'success': False,
+            'message': error_msg
+        }, status_code=500)
+    except Exception as e:
+        error_msg = f"Failed to sync time: {str(e)}"
+        sync_logger.error(error_msg)
+        html_log_path = os.path.join(BASE_DIR, "conlog.html")
+        with open(html_log_path, "a") as html_log:
+            html_log.write(
+                f"<div style='color:red'>Sync error: {error_msg} at {datetime.now().isoformat()}</div>\n"
+            )
+        return JSONResponse(content={
+            'success': False,
+            'message': error_msg
+        }, status_code=500)
+
+
+# ----------------------------- WebSocket Events -----------------------------
+
+@sio.event
+async def connect(sid, environ):
+    """Handle WebSocket connection"""
+    logger.info(f"WebSocket client connected: {sid}")
+    # Send current script status on connection
+    await sio.emit('scripts_status', ROS2_SCRIPTS, room=sid)
+
+
+@sio.event
+async def disconnect(sid):
+    """Handle WebSocket disconnection"""
+    logger.info(f"WebSocket client disconnected: {sid}")
+
+
+@sio.event
+async def start_script(sid, data):
+    """Handle start script request via WebSocket"""
+    try:
+        script_id = data.get('script_id')
+        logger.info(f'WebSocket request to start script: {script_id} from {sid}')
+        
+        # Backward compatibility
+        if script_id == 'rviz2':
+            script_id = 'record_bag'
+        
+        if script_id not in ROS2_SCRIPTS:
+            await sio.emit('script_error', {
+                'script_id': script_id,
+                'error': 'Script not found'
+            }, room=sid)
+            return
+
+        if script_id in running_processes:
+            await sio.emit('script_error', {
+                'script_id': script_id,
+                'error': 'Script already running'
+            }, room=sid)
+            return
+
+        command = ROS2_SCRIPTS[script_id]['command']
+        script_name = ROS2_SCRIPTS[script_id]['description']
+
+        # Start the process
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid  # Create new process group
+        )
+
+        # Update tracking
+        running_processes[script_id] = process
+        ROS2_SCRIPTS[script_id]['status'] = 'running'
+        ROS2_SCRIPTS[script_id]['pid'] = str(process.pid)
+
+        logger.info(f'Successfully started {script_id} with PID: {process.pid}')
+        
+        # Broadcast status update to all connected clients
+        await sio.emit('script_started', {
+            'script_id': script_id,
+            'message': f'Started {script_name}',
+            'pid': process.pid,
+            'status': 'running'
+        })
+        
+        # Send full status update
+        await sio.emit('scripts_status', ROS2_SCRIPTS)
+        
+    except Exception as e:
+        logger.error(f'Failed to start script via WebSocket: {str(e)}')
+        await sio.emit('script_error', {
+            'script_id': data.get('script_id'),
+            'error': str(e)
+        }, room=sid)
+
+
+@sio.event
+async def stop_script(sid, data):
+    """Handle stop script request via WebSocket"""
+    try:
+        script_id = data.get('script_id')
+        logger.info(f'WebSocket request to stop script: {script_id} from {sid}')
+        
+        # Backward compatibility
+        if script_id == 'rviz2':
+            script_id = 'record_bag'
+            
+        if script_id not in ROS2_SCRIPTS:
+            await sio.emit('script_error', {
+                'script_id': script_id,
+                'error': 'Invalid script ID'
+            }, room=sid)
+            return
+
+        script_name = ROS2_SCRIPTS[script_id]['description']
+        
+        # Always ensure status is set to stopped
+        ROS2_SCRIPTS[script_id]['status'] = 'stopped'
+        ROS2_SCRIPTS[script_id]['pid'] = None
+        
+        if script_id not in running_processes:
+            await sio.emit('script_stopped', {
+                'script_id': script_id,
+                'message': f'{script_name} is already stopped',
+                'status': 'stopped'
+            }, room=sid)
+            await sio.emit('scripts_status', ROS2_SCRIPTS)
+            return
+
+        process = running_processes[script_id]
+        pid = process.pid
+        
+        # Check if process is still alive
+        if process.poll() is not None:
+            # Process already terminated
+            del running_processes[script_id]
+            await sio.emit('script_stopped', {
+                'script_id': script_id,
+                'message': f'Stopped {script_name} (PID: {pid})',
+                'status': 'stopped'
+            })
+            await sio.emit('scripts_status', ROS2_SCRIPTS)
+            return
+
+        # Terminate the process gracefully
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # Force kill if termination times out
+            process.kill()
+            process.wait()
+        except ProcessLookupError:
+            # Process doesn't exist anymore
+            pass
+
+        del running_processes[script_id]
+        
+        logger.info(f"Successfully stopped {script_id} (PID: {pid})")
+        
+        # Broadcast status update to all connected clients
+        await sio.emit('script_stopped', {
+            'script_id': script_id,
+            'message': f'Stopped {script_name}',
+            'pid': pid,
+            'status': 'stopped'
+        })
+        
+        # Send full status update
+        await sio.emit('scripts_status', ROS2_SCRIPTS)
+        
+    except Exception as e:
+        logger.error(f'Error stopping script via WebSocket: {str(e)}')
+        # Clean up even on error
+        if script_id in running_processes:
+            del running_processes[script_id]
+        await sio.emit('script_stopped', {
+            'script_id': data.get('script_id'),
+            'message': f'Stopped {ROS2_SCRIPTS[script_id]["description"]}',
+            'status': 'stopped'
+        })
+        await sio.emit('scripts_status', ROS2_SCRIPTS)
+
+
+async def background_time_sender():
+    """Background task to send server time via WebSocket"""
+    while True:
+        await asyncio.sleep(1)
+        now = datetime.now().astimezone()
+        # Format: 01/21/2026, 12:06:02 EST (America/New_York)
+        time_str = now.strftime('%m/%d/%Y, %H:%M:%S')
+        # Get timezone abbreviation (EST, PST, etc.)
+        tz_abbr = now.strftime('%Z')
+        # Get IANA timezone name from /etc/timezone (Linux) or tzinfo
+        try:
+            with open('/etc/timezone', 'r') as f:
+                tz_name = f.read().strip()
+        except:
+            tz_name = str(now.tzinfo)
+        server_time = f"{time_str} {tz_abbr} ({tz_name})"
+        try:
+            await sio.emit('server_time', {'time': server_time})
+        except Exception as e:
+            # Ignore errors if no client connected
+            pass
+
+
+async def background_script_monitor():
+    """Background task to monitor script status and send updates"""
+    while True:
+        await asyncio.sleep(2)  # Check every 2 seconds
+        try:
+            status_changed = False
+            # Check if any running processes have terminated
+            for script_id in list(running_processes.keys()):
+                process = running_processes[script_id]
+                if process.poll() is not None:
+                    # Process has terminated
+                    logger.info(f"Detected {script_id} has stopped (exit code: {process.returncode})")
+                    ROS2_SCRIPTS[script_id]['status'] = 'stopped'
+                    ROS2_SCRIPTS[script_id]['pid'] = None
+                    del running_processes[script_id]
+                    status_changed = True
+                    
+                    # Notify clients
+                    await sio.emit('script_stopped', {
+                        'script_id': script_id,
+                        'message': f'{ROS2_SCRIPTS[script_id]["description"]} stopped',
+                        'status': 'stopped',
+                        'exit_code': process.returncode
+                    })
+            
+            # Send periodic status update if anything changed
+            if status_changed:
+                await sio.emit('scripts_status', ROS2_SCRIPTS)
+                
+        except Exception as e:
+            logger.error(f"Error in script monitor: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on app startup"""
+    asyncio.create_task(background_time_sender())
+    asyncio.create_task(background_script_monitor())
+    logger.info("Background tasks started: time sender and script monitor")
+
+
 if __name__ == "__main__":
     import uvicorn
     server_config = config.get('server', {})
     host = server_config.get('host', '0.0.0.0')
     port = server_config.get('port', 8000)
-    uvicorn.run("app:app", host=host, port=port, reload=True)
+    # Use socket_app to include Socket.IO
+    uvicorn.run(socket_app, host=host, port=port)
 
